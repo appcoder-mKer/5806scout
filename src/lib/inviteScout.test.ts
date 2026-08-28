@@ -13,7 +13,7 @@ vi.mock("@/lib/config", () => ({
   },
 }));
 
-import { InviteError, inviteScout } from "./inviteScout";
+import { InviteError, generateThrowawayPassword, inviteScout } from "./inviteScout";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return {
@@ -234,5 +234,86 @@ describe("inviteScout", () => {
     await expect(
       inviteScout("expired-token", "Ada", "ada@team.org"),
     ).rejects.toMatchObject({ status: 401 });
+  });
+  it("signs the invitee up with a password that meets Firebase's policy", async () => {
+    const fetchMock = mockFetchSequence({});
+    vi.stubGlobal("fetch", fetchMock);
+
+    await inviteScout("caller-token", "Ada Lovelace", "ada@team.org");
+
+    const signUp = fetchMock.mock.calls.find(([url]) =>
+      (url as string).includes("accounts:signUp"),
+    );
+    expect(signUp).toBeDefined();
+    const { password } = JSON.parse((signUp![1] as RequestInit).body as string);
+    // The project enforces lower + upper + numeric + non-alphanumeric. A
+    // randomUUID-based password is all lowercase and fails the third check.
+    expect(password.length).toBeGreaterThanOrEqual(32);
+    expect(password).toMatch(/[a-z]/);
+    expect(password).toMatch(/[A-Z]/);
+    expect(password).toMatch(/[0-9]/);
+    expect(password).toMatch(/[^a-zA-Z0-9]/);
+  });
+
+  it("uses a different throwaway password for each invite", async () => {
+    const fetchMock = mockFetchSequence({});
+    vi.stubGlobal("fetch", fetchMock);
+
+    await inviteScout("caller-token", "Ada", "ada@team.org");
+    await inviteScout("caller-token", "Grace", "grace@team.org");
+
+    const passwords = fetchMock.mock.calls
+      .filter(([url]) => (url as string).includes("accounts:signUp"))
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string).password);
+    expect(passwords).toHaveLength(2);
+    expect(passwords[0]).not.toBe(passwords[1]);
+  });
+
+  it("never blames the admin when Firebase rejects our throwaway password", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchSequence({
+        signUp: () =>
+          jsonResponse(
+            {
+              error: {
+                message:
+                  "PASSWORD_DOES_NOT_MEET_REQUIREMENTS : Missing password requirements: [Password must contain an upper case character]",
+              },
+            },
+            false,
+            400,
+          ),
+      }),
+    );
+
+    const promise = inviteScout("caller-token", "Ada", "ada@team.org");
+    await expect(promise).rejects.toMatchObject({ status: 500 });
+    await expect(promise).rejects.toThrow(
+      /^Couldn't set up the account — try again/,
+    );
+  });
+});
+
+describe("generateThrowawayPassword", () => {
+  it("always emits every character class the policy requires", () => {
+    for (let i = 0; i < 200; i++) {
+      const password = generateThrowawayPassword();
+      expect(password).toHaveLength(32);
+      expect(password).toMatch(/[a-z]/);
+      expect(password).toMatch(/[A-Z]/);
+      expect(password).toMatch(/[0-9]/);
+      expect(password).toMatch(/[!@#$%^&*_-]/);
+    }
+  });
+
+  it("does not pin the guaranteed classes to fixed positions", () => {
+    // A shuffle bug would leave the digit stuck at index 2 every time.
+    const digitPositions = new Set(
+      Array.from({ length: 100 }, () =>
+        generateThrowawayPassword().search(/[0-9]/),
+      ),
+    );
+    expect(digitPositions.size).toBeGreaterThan(1);
   });
 });

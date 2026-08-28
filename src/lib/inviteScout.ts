@@ -55,6 +55,18 @@ async function identityCall<T>(
     if (code.startsWith("INVALID_ID_TOKEN") || code.startsWith("USER_NOT_FOUND")) {
       throw new InviteError("Your session has expired — log in again.", 401);
     }
+    if (
+      code.startsWith("PASSWORD_DOES_NOT_MEET_REQUIREMENTS") ||
+      code.startsWith("WEAK_PASSWORD")
+    ) {
+      // The only password we send is the throwaway one generated below, so
+      // this is our bug, not something the admin typed. Never word it as if
+      // they got a password wrong.
+      throw new InviteError(
+        "Couldn't set up the account — try again, and tell an admin if it keeps happening.",
+        500,
+      );
+    }
     throw new InviteError(`Invite failed (${code}).`, 502);
   }
   return (await res.json()) as T;
@@ -91,6 +103,52 @@ async function getCallerProfile(
   };
 }
 
+const LOWER = "abcdefghijklmnopqrstuvwxyz";
+const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const DIGITS = "0123456789";
+// A conservative slice of Firebase's allowed non-alphanumerics — no quotes,
+// backslash or backtick, so the value is never awkward in a log or a shell.
+const SYMBOLS = "!@#$%^&*_-";
+const PASSWORD_LENGTH = 32;
+
+/** Uniform index into `size`, drawn by rejection sampling so the modulo
+ *  doesn't skew the tail of the alphabet. */
+function randomIndex(size: number): number {
+  const limit = 256 - (256 % size);
+  const byte = new Uint8Array(1);
+  for (;;) {
+    crypto.getRandomValues(byte);
+    if (byte[0] < limit) return byte[0] % size;
+  }
+}
+
+function randomChar(alphabet: string): string {
+  return alphabet[randomIndex(alphabet.length)];
+}
+
+/** A throwaway password for a freshly invited scout. Firebase's password
+ *  policy is enforced on accounts:signUp, so this has to carry one of every
+ *  character class the project requires — a plain hex/UUID string is all
+ *  lowercase and gets rejected. Don't "simplify" this back to randomUUID(). */
+export function generateThrowawayPassword(): string {
+  const alphabet = LOWER + UPPER + DIGITS + SYMBOLS;
+  const chars = [
+    randomChar(LOWER),
+    randomChar(UPPER),
+    randomChar(DIGITS),
+    randomChar(SYMBOLS),
+  ];
+  while (chars.length < PASSWORD_LENGTH) {
+    chars.push(randomChar(alphabet));
+  }
+  // Fisher-Yates, so the guaranteed four aren't pinned to the first four slots.
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomIndex(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
 export interface InviteResult {
   email: string;
 }
@@ -116,7 +174,7 @@ export async function inviteScout(
 
   // The invitee never sees this password — they set their own via the
   // password-reset email below.
-  const throwawayPassword = crypto.randomUUID() + crypto.randomUUID();
+  const throwawayPassword = generateThrowawayPassword();
   const created = await identityCall<{ localId: string; idToken: string }>(
     "accounts:signUp",
     { email, password: throwawayPassword, returnSecureToken: true },
