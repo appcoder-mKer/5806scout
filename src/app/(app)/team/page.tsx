@@ -775,7 +775,12 @@ export default function TeamPage() {
                   <span className="ml-1.5 text-xs text-graphite-400">(you)</span>
                 )}
               </p>
-              <p className="text-xs text-graphite-500">{member.email}</p>
+              {/* A teammate's email is roster admin, not roster info: only
+                  an admin sees the column, and a scout sees nothing but
+                  their own address. */}
+              {(isAdmin || member.uid === user?.uid) && (
+                <p className="text-xs text-graphite-500">{member.email}</p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {member.teamId !== profile?.teamId && (
