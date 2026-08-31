@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FormSection } from "./formSchema";
 import {
+  addPicklistColumnId,
   ALWAYS_ON_COLUMNS,
   availablePicklistColumns,
   comparePicklistRows,
@@ -238,5 +239,54 @@ describe("comparePicklistRows", () => {
     const original = [...rows];
     [...rows].sort(comparePicklistRows(column, "desc"));
     expect(rows).toEqual(original);
+  });
+});
+
+describe("addPicklistColumnId", () => {
+  it("puts a new column before Notes, not after it", () => {
+    expect(addPicklistColumnId(["epa", "matches", "notes"], "avg:x")).toEqual([
+      "epa",
+      "matches",
+      "avg:x",
+      "notes",
+    ]);
+  });
+
+  it("appends when Notes is not shown", () => {
+    expect(addPicklistColumnId(["epa", "matches"], "avg:x")).toEqual([
+      "epa",
+      "matches",
+      "avg:x",
+    ]);
+    expect(addPicklistColumnId([], "avg:x")).toEqual(["avg:x"]);
+  });
+
+  it("puts Notes itself last when it is the one being added", () => {
+    expect(addPicklistColumnId(["epa", "matches"], "notes")).toEqual([
+      "epa",
+      "matches",
+      "notes",
+    ]);
+  });
+
+  it("is a no-op for a column already chosen", () => {
+    expect(addPicklistColumnId(["epa", "notes"], "epa")).toEqual([
+      "epa",
+      "notes",
+    ]);
+  });
+
+  it("keeps Notes last across several additions", () => {
+    let ids: string[] = [...DEFAULT_PICKLIST_COLUMN_IDS];
+    ids = addPicklistColumnId(ids, "avg:a");
+    ids = addPicklistColumnId(ids, "mode:b");
+    expect(ids.at(-1)).toBe("notes");
+    expect(ids.slice(-3)).toEqual(["avg:a", "mode:b", "notes"]);
+  });
+
+  it("does not mutate the list it was given", () => {
+    const ids = ["epa", "notes"];
+    addPicklistColumnId(ids, "matches");
+    expect(ids).toEqual(["epa", "notes"]);
   });
 });

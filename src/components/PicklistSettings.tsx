@@ -3,6 +3,7 @@
 import { useAuth } from "@/lib/auth/AuthProvider";
 import { db } from "@/lib/firebase/client";
 import {
+  addPicklistColumnId,
   ALWAYS_ON_COLUMNS,
   availablePicklistColumns,
   DEFAULT_PICKLIST_COLUMN_IDS,
@@ -72,7 +73,7 @@ export function PicklistSettings() {
     setDraft(
       working.includes(id)
         ? working.filter((chosen) => chosen !== id)
-        : [...working, id],
+        : addPicklistColumnId(working, id),
     );
     if (status.state !== "idle") setStatus({ state: "idle" });
   }

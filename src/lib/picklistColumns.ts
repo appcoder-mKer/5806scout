@@ -45,6 +45,12 @@ const AVG_PREFIX = "avg:";
 const MODE_PREFIX = "mode:";
 
 /**
+ * Notes is a wide free-text cell, so it earns the right edge of the table —
+ * a criteria column added after it would strand it mid-row.
+ */
+export const NOTES_COLUMN_ID = "notes";
+
+/**
  * Always on the table, never in the Settings checklist. Team and Name are how
  * you find a row at all; My Rank is the picklist itself.
  */
@@ -62,7 +68,7 @@ const FIXED_OPTIONAL_COLUMNS: readonly PicklistColumn[] = [
   { id: "avgTeleop", label: "Avg teleop", fullLabel: "Avg teleop scored", kind: "avgTeleop", numeric: true, sortable: true },
   { id: "matches", label: "Matches", fullLabel: "Matches scouted", kind: "matches", numeric: true, sortable: true },
   // Free text — sorting a column of paragraphs helps nobody.
-  { id: "notes", label: "Notes", fullLabel: "Notes", kind: "notes", numeric: false, sortable: false },
+  { id: NOTES_COLUMN_ID, label: "Notes", fullLabel: "Notes", kind: "notes", numeric: false, sortable: false },
 ];
 
 /**
@@ -78,8 +84,23 @@ export const DEFAULT_PICKLIST_COLUMN_IDS: readonly string[] = [
   `${AVG_PREFIX}driverSkill`,
   `${AVG_PREFIX}defenseSkill`,
   "matches",
-  "notes",
+  NOTES_COLUMN_ID,
 ];
+
+/**
+ * Turn a column on, keeping Notes last. Checking a box in Picklist Settings
+ * appends to the chosen list, which would otherwise push the new column past
+ * Notes and off the right of a table people scroll sideways anyway.
+ */
+export function addPicklistColumnId(
+  ids: readonly string[],
+  id: string,
+): string[] {
+  if (ids.includes(id)) return [...ids];
+  const notesAt = ids.indexOf(NOTES_COLUMN_ID);
+  if (notesAt === -1 || id === NOTES_COLUMN_ID) return [...ids, id];
+  return [...ids.slice(0, notesAt), id, ...ids.slice(notesAt)];
+}
 
 function labelsBySection(
   sections: readonly FormSection[],
