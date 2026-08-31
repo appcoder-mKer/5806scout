@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import { useAppearance } from "@/components/AppearanceProvider";
 import { MobileMenu } from "@/components/AppNav";
+import { OperatorLink } from "@/components/OperatorLink";
 import { auth } from "@/lib/firebase/client";
 import { signOut } from "firebase/auth";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -71,6 +72,7 @@ export function AppHeader() {
               )}
             </span>
           )}
+          <OperatorLink />
           <ThemeToggle />
           {profile && (
             <button
