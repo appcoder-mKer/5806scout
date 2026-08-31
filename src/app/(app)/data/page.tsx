@@ -13,6 +13,7 @@ import {
 } from "@/lib/aggregate";
 import { useStoredPreference } from "@/lib/storedPreference";
 import { ReliabilityWarning } from "@/components/ReliabilityFlags";
+import { SortableTh, type Sort } from "@/components/SortableTh";
 import { useScoutForms } from "@/lib/useScoutForms";
 import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
 import Link from "next/link";
@@ -55,15 +56,6 @@ const STAT_MODE_BLURBS: Record<StatMode, string> = {
   iqr: "Median, then the interquartile range (Q3 − Q1) after it: the width of the middle half of their matches. Small spread means you can count on them.",
 };
 
-type SortDir = "asc" | "desc";
-
-/** Which column a table is ordered by; null means the table's natural order
- *  (Raw: match number as queried; By Team: whatever aggregateByTeam returns). */
-interface Sort {
-  key: string;
-  dir: SortDir;
-}
-
 /** One counter's value from every listed submission; a blank reads as 0,
  *  matching how aggregateByTeam counts an unanswered field. */
 function columnValues(
@@ -102,85 +94,6 @@ function compareTeam(a: string, b: string): number {
 function statValue(agg: TeamAggregate, id: string, mode: StatMode): number {
   if (mode === "mean") return agg.averages[id] ?? 0;
   return median(agg.samples[id] ?? []) ?? 0;
-}
-
-/**
- * Up/down arrows that set the sort direction for one column. Pressing the
- * arrow that's already active clears the sort — it's the only way back to the
- * table's natural order.
- */
-function SortArrows({
-  label,
-  sortKey,
-  sort,
-  onSort,
-}: {
-  label: string;
-  sortKey: string;
-  sort: Sort | null;
-  onSort: (next: Sort | null) => void;
-}) {
-  const active = sort?.key === sortKey ? sort.dir : null;
-  return (
-    <span className="ml-1 inline-flex flex-col leading-[0.6]">
-      {(["asc", "desc"] as const).map((dir) => (
-        <button
-          key={dir}
-          type="button"
-          aria-pressed={active === dir}
-          aria-label={`Sort by ${label} ${
-            dir === "asc" ? "ascending" : "descending"
-          }`}
-          onClick={() => onSort(active === dir ? null : { key: sortKey, dir })}
-          title={`Sort ${label} ${dir === "asc" ? "ascending" : "descending"}`}
-          className={`px-0.5 text-[9px] transition ${
-            active === dir
-              ? "text-maroon-600 dark:text-maroon-400"
-              : "text-graphite-300 hover:text-graphite-600"
-          }`}
-        >
-          <span aria-hidden>{dir === "asc" ? "▲" : "▼"}</span>
-        </button>
-      ))}
-    </span>
-  );
-}
-
-/** A column header with its sort controls. */
-function SortableTh({
-  label,
-  sortKey,
-  sort,
-  onSort,
-}: {
-  label: string;
-  sortKey: string;
-  sort: Sort | null;
-  onSort: (next: Sort | null) => void;
-}) {
-  const active = sort?.key === sortKey ? sort.dir : null;
-  return (
-    <th
-      className="px-3 py-2.5"
-      aria-sort={
-        active === "asc"
-          ? "ascending"
-          : active === "desc"
-            ? "descending"
-            : "none"
-      }
-    >
-      <span className="inline-flex items-center whitespace-nowrap">
-        {label}
-        <SortArrows
-          label={label}
-          sortKey={sortKey}
-          sort={sort}
-          onSort={onSort}
-        />
-      </span>
-    </th>
-  );
 }
 
 export default function DataPage() {

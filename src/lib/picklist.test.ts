@@ -5,6 +5,7 @@ import {
   moveToDoNotPick,
   reconcileOrder,
   restoreFromDoNotPick,
+  setRank,
   splitDoNotPick,
   toggleStruck,
 } from "./picklist";
@@ -95,5 +96,36 @@ describe("moveToDoNotPick / restoreFromDoNotPick", () => {
       order: [1, 2],
       doNotPick: [3],
     });
+  });
+});
+
+describe("setRank", () => {
+  it("moves a team to the 1-based rank typed", () => {
+    expect(setRank([10, 20, 30, 40], 40, 2)).toEqual([10, 40, 20, 30]);
+    expect(setRank([10, 20, 30, 40], 10, 4)).toEqual([20, 30, 40, 10]);
+  });
+
+  it("clamps a rank below 1 or past the end", () => {
+    expect(setRank([10, 20, 30], 30, 0)).toEqual([30, 10, 20]);
+    expect(setRank([10, 20, 30], 30, -5)).toEqual([30, 10, 20]);
+    expect(setRank([10, 20, 30], 10, 99)).toEqual([20, 30, 10]);
+  });
+
+  it("leaves the order alone when the rank is where the team already is", () => {
+    expect(setRank([10, 20, 30], 20, 2)).toEqual([10, 20, 30]);
+  });
+
+  it("is a no-op for a team not in the ranking", () => {
+    expect(setRank([10, 20], 99, 1)).toEqual([10, 20]);
+  });
+
+  it("ignores a non-numeric rank rather than dropping the team", () => {
+    expect(setRank([10, 20, 30], 30, Number.NaN)).toEqual([10, 20, 30]);
+  });
+
+  it("does not mutate the array it was given", () => {
+    const order = [10, 20, 30];
+    setRank(order, 30, 1);
+    expect(order).toEqual([10, 20, 30]);
   });
 });

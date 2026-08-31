@@ -14,6 +14,12 @@ export interface PicklistDoc {
    * write — a scout typing a note must never overwrite the admin's order.
    */
   notes?: Record<string, string>;
+  /**
+   * Column ids shown on the picklist table, in order (see picklistColumns.ts).
+   * Absent means the default set — a team that never opened Picklist Settings
+   * keeps the table it has always had.
+   */
+  columns?: string[];
   updatedAt: number;
 }
 
@@ -48,6 +54,23 @@ export function moveItem(list: readonly number[], from: number, to: number): num
   const [item] = next.splice(from, 1);
   next.splice(to, 0, item);
   return next;
+}
+
+/**
+ * Move `team` to the 1-based `rank`, clamped into range. The one write path
+ * behind the My Rank column: it reads and writes this array, never the order
+ * rows happen to be displayed in, which is what lets a column sort be a pure
+ * display lens over the ranking.
+ */
+export function setRank(
+  order: readonly number[],
+  team: number,
+  rank: number,
+): number[] {
+  const from = order.indexOf(team);
+  if (from === -1 || !Number.isFinite(rank)) return [...order];
+  const to = Math.min(Math.max(Math.trunc(rank) - 1, 0), order.length - 1);
+  return moveItem(order, from, to);
 }
 
 export function toggleStruck(struck: readonly number[], team: number): number[] {

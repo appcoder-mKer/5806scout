@@ -1,7 +1,8 @@
 "use client";
 
 import { AllianceBoard } from "@/components/AllianceBoard";
-import { ReliabilityWarning } from "@/components/ReliabilityFlags";
+import { PicklistTable } from "@/components/PicklistTable";
+import { type Sort } from "@/components/SortableTh";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import {
   aggregateByTeam,
@@ -27,22 +28,22 @@ import {
   moveToDoNotPick,
   reconcileOrder,
   restoreFromDoNotPick,
+  setRank,
   splitDoNotPick,
   type PicklistDoc,
 } from "@/lib/picklist";
+import {
+  comparePicklistRows,
+  resolvePicklistColumns,
+  sanitizePicklistColumnIds,
+  type PicklistRow,
+} from "@/lib/picklistColumns";
 import { collection, doc, onSnapshot, setDoc } from "firebase/firestore";
-import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 function phaseAvg(agg: TeamAggregate | undefined, ids: string[]): number | null {
   if (!agg) return null;
   return ids.reduce((sum, id) => sum + (agg.averages[id] ?? 0), 0);
-}
-
-/** A 0–5 post-match rating, averaged across the team's scouted matches. */
-function ratingAvg(agg: TeamAggregate | undefined, id: string): string {
-  const value = agg?.averages[id];
-  return value == null ? "—" : value.toFixed(1);
 }
 
 type View = "picklist" | "alliances" | "simulation";
@@ -65,7 +66,10 @@ export default function PicklistPage() {
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [eventRanks, setEventRanks] = useState<Map<number, number>>(new Map());
-  const dragFrom = useRef<number | null>(null);
+  // Which criteria column the table is ordered by. Deliberately component
+  // state, not persisted: a sort is a lens for comparing teams, while the
+  // ranking below it is the record. Clearing it returns to My Rank order.
+  const [sort, setSort] = useState<Sort | null>(null);
 
   useEffect(() => {
     if (!profile || !dataTeamId) return;
@@ -201,6 +205,70 @@ export default function PicklistPage() {
     [matchSections],
   );
 
+  // Which columns to show, chosen in Settings -> Picklist and stored on the
+  // picklist doc. The metric columns are resolved against the team's live
+  // Match Scout schema, so a question deleted in Form Setup takes its column
+  // with it and one added becomes available with no rebuild.
+  const columns = useMemo(
+    () =>
+      resolvePicklistColumns(
+        matchSections,
+        sanitizePicklistColumnIds(picklist?.columns),
+      ),
+    [matchSections, picklist],
+  );
+  // Do Not Pick teams are out of the ranking, so they have no rank to show.
+  const dnpColumns = useMemo(
+    () => columns.filter((column) => column.kind !== "myRank"),
+    [columns],
+  );
+
+  const makeRow = useCallback(
+    (teamNumber: number, rank: number | null): PicklistRow => {
+      const info = teamsByNumber.get(teamNumber);
+      const agg = aggregates.get(String(teamNumber));
+      return {
+        teamNumber,
+        rank,
+        name: info?.nickname ?? null,
+        eventRank: eventRanks.get(teamNumber) ?? null,
+        epa: info?.epa ?? null,
+        avgAuto: phaseAvg(agg, autoIds),
+        avgTeleop: phaseAvg(agg, teleopIds),
+        matches: agg?.matches ?? 0,
+        averages: agg?.averages ?? null,
+        modes: agg?.modes ?? null,
+        note: notes[String(teamNumber)] ?? "",
+      };
+    },
+    [teamsByNumber, aggregates, eventRanks, autoIds, teleopIds, notes],
+  );
+
+  // Every row carries its rank in the SAVED order, not its position on
+  // screen — that's what keeps My Rank meaningful under a sort.
+  const rows = useMemo(
+    () => order.map((teamNumber, index) => makeRow(teamNumber, index + 1)),
+    [order, makeRow],
+  );
+  const dnpRows = useMemo(
+    () => doNotPick.map((teamNumber) => makeRow(teamNumber, null)),
+    [doNotPick, makeRow],
+  );
+
+  // A sort on a column the team has since hidden falls back to rank order
+  // rather than leaving the table stuck in an ordering nothing explains.
+  const sortColumn = useMemo(
+    () => (sort ? (columns.find((c) => c.id === sort.key) ?? null) : null),
+    [sort, columns],
+  );
+  const displayRows = useMemo(
+    () =>
+      sortColumn && sort
+        ? [...rows].sort(comparePicklistRows(sortColumn, sort.dir))
+        : rows,
+    [rows, sortColumn, sort],
+  );
+
   const isAdmin = profile?.role === "admin";
 
   // Alliances can and do pick teams we ranked low or wrote off, so the board
@@ -268,6 +336,16 @@ export default function PicklistPage() {
     void save(moveItem(order, from, to), [...struck], [...doNotPick]);
   }
 
+  // The My Rank column's only write path. It moves the team within the saved
+  // order, which is the picklist itself — sorting never calls this.
+  function handleRankChange(team: number, rank: number) {
+    void save(setRank(order, team, rank), [...struck], [...doNotPick]);
+  }
+
+  function handleNoteChange(team: number, text: string) {
+    void saveNotes({ ...notes, [String(team)]: text });
+  }
+
   function handleDoNotPick(team: number) {
     const next = moveToDoNotPick(order, doNotPick, team);
     void save(next.order, [...struck], next.doNotPick);
@@ -287,8 +365,8 @@ export default function PicklistPage() {
         </h1>
         <p className="page-lede">
           {isAdmin
-            ? "Drag rows (or use the arrows) to rank alliance picks. Tap a team number or name to open its summary, or DNP to move one to the Do Not Pick list."
-            : "Live ranking maintained by your admin — updates in real time. Notes are open to everyone."}
+            ? "Type a My rank to move a team, or drag rows to reorder. Sort any column to compare teams — sorting is a view only and never changes My rank. Tap a team number or name to open its summary, or DNP to move one to the Do Not Pick list."
+            : "Live ranking maintained by your admin — updates in real time. Sort any column to compare teams; notes are open to everyone."}
         </p>
       </div>
 
@@ -326,148 +404,85 @@ export default function PicklistPage() {
 
           {view === "picklist" && (
             <>
+              {sortColumn && (
+                <p className="surface-panel flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-xs text-graphite-500">
+                  <span>
+                    Sorted by {sortColumn.label} — a view, not the ranking. My
+                    rank still says where each team really sits, and{" "}
+                    {isAdmin
+                      ? "is still editable; drag and the ↑↓ arrows are off until you clear the sort."
+                      : "is unchanged by sorting."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSort(null)}
+                    className="rounded border border-graphite-200 px-2 py-0.5 font-medium text-graphite-600 transition hover:border-graphite-300"
+                  >
+                    Clear sort
+                  </button>
+                </p>
+              )}
+
               <div className="surface-card overflow-x-auto">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th className="px-3 py-2.5">Team</th>
-                      <th className="px-3 py-2.5">Name</th>
-                      <th className="px-3 py-2.5">Event rank</th>
-                      <th className="px-3 py-2.5">EPA</th>
-                      <th className="px-3 py-2.5">Avg auto</th>
-                      <th className="px-3 py-2.5">Avg teleop</th>
-                      <th className="px-3 py-2.5">Endgame</th>
-                      <th className="px-3 py-2.5">Avg driver</th>
-                      <th className="px-3 py-2.5">Avg defense</th>
-                      <th className="px-3 py-2.5">Matches</th>
-                      <th className="px-3 py-2.5">Notes</th>
-                      {isAdmin && (
-                        <th className="px-3 py-2.5" aria-label="Reorder" />
-                      )}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-graphite-100">
-                    {order.map((teamNumber, index) => {
-                      const info = teamsByNumber.get(teamNumber);
-                      const agg = aggregates.get(String(teamNumber));
-                      const auto = phaseAvg(agg, autoIds);
-                      const teleop = phaseAvg(agg, teleopIds);
-                      return (
-                        <tr
-                          key={teamNumber}
-                          draggable={isAdmin}
-                          onDragStart={() => {
-                            dragFrom.current = index;
-                          }}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={() => {
-                            if (
-                              dragFrom.current !== null &&
-                              dragFrom.current !== index
-                            ) {
-                              handleMove(dragFrom.current, index);
-                            }
-                            dragFrom.current = null;
-                          }}
-                          className="transition hover:bg-graphite-50"
-                        >
-                          <td className="px-3 py-2">
-                            <span className="inline-flex items-center gap-1.5">
-                              <Link
-                                href={`/teams/${teamNumber}`}
-                                // Anchors drag themselves by default, which
-                                // would hijack the row's drag-to-reorder.
-                                draggable={false}
-                                className="stat font-semibold underline-offset-2 hover:text-maroon-600 hover:underline dark:hover:text-maroon-400"
-                                title={`Open ${teamNumber}'s summary`}
+                <PicklistTable
+                  columns={columns}
+                  rows={displayRows}
+                  sort={sort}
+                  onSort={setSort}
+                  isAdmin={isAdmin}
+                  draggable={sortColumn === null}
+                  onDropRow={handleMove}
+                  onRankChange={handleRankChange}
+                  onNoteChange={handleNoteChange}
+                  rankCount={order.length}
+                  emptyMessage="No teams to rank yet."
+                  renderActions={
+                    isAdmin
+                      ? (row) => {
+                          const index = (row.rank ?? 1) - 1;
+                          return (
+                            <span className="flex gap-1">
+                              {/* Up and down mean "one rank", which only reads
+                                  as up and down while the table is in rank
+                                  order — so they stand down under a sort and
+                                  My Rank takes over. */}
+                              {sortColumn === null && (
+                                <>
+                                  <button
+                                    type="button"
+                                    aria-label={`Move ${row.teamNumber} up`}
+                                    disabled={index === 0}
+                                    onClick={() => handleMove(index, index - 1)}
+                                    className="rounded border border-graphite-200 px-2 py-1 text-xs text-graphite-600 transition hover:border-graphite-300 disabled:opacity-30"
+                                  >
+                                    ↑
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Move ${row.teamNumber} down`}
+                                    disabled={index === order.length - 1}
+                                    onClick={() => handleMove(index, index + 1)}
+                                    className="rounded border border-graphite-200 px-2 py-1 text-xs text-graphite-600 transition hover:border-graphite-300 disabled:opacity-30"
+                                  >
+                                    ↓
+                                  </button>
+                                </>
+                              )}
+                              <button
+                                type="button"
+                                aria-label={`Move ${row.teamNumber} to Do Not Pick`}
+                                onClick={() => handleDoNotPick(row.teamNumber)}
+                                className="rounded border border-maroon-200 dark:border-maroon-700 px-2 py-1 text-xs font-medium text-maroon-700 dark:text-maroon-300 transition hover:border-maroon-400"
+                                title="Move to Do Not Pick"
                               >
-                                {teamNumber}
-                              </Link>
-                              <ReliabilityWarning teamNumber={teamNumber} />
+                                DNP
+                              </button>
                             </span>
-                          </td>
-                          <td className="px-3 py-2">
-                            <Link
-                              href={`/teams/${teamNumber}`}
-                              draggable={false}
-                              className="text-left underline-offset-2 hover:text-maroon-600 hover:underline dark:hover:text-maroon-400"
-                              title={`Open ${teamNumber}'s summary`}
-                            >
-                              {info?.nickname ?? "—"}
-                            </Link>
-                          </td>
-                          <td className="stat px-3 py-2">
-                            {eventRanks.get(teamNumber) ?? "—"}
-                          </td>
-                          <td className="stat px-3 py-2">
-                            {info?.epa != null ? info.epa.toFixed(1) : "—"}
-                          </td>
-                          <td className="stat px-3 py-2">
-                            {auto !== null && agg ? auto.toFixed(1) : "—"}
-                          </td>
-                          <td className="stat px-3 py-2">
-                            {teleop !== null && agg ? teleop.toFixed(1) : "—"}
-                          </td>
-                          <td className="px-3 py-2 text-graphite-600">
-                            {agg?.modes.endgame ?? "—"}
-                          </td>
-                          <td className="stat px-3 py-2">
-                            {ratingAvg(agg, "driverSkill")}
-                          </td>
-                          <td className="stat px-3 py-2">
-                            {ratingAvg(agg, "defenseSkill")}
-                          </td>
-                          <td className="stat px-3 py-2">{agg?.matches ?? 0}</td>
-                          <td className="px-3 py-2">
-                            <TeamNote
-                              teamNumber={teamNumber}
-                              saved={notes[String(teamNumber)] ?? ""}
-                              onSave={(text) =>
-                                void saveNotes({
-                                  ...notes,
-                                  [String(teamNumber)]: text,
-                                })
-                              }
-                            />
-                          </td>
-                          {isAdmin && (
-                            <td className="px-3 py-2">
-                              <span className="flex gap-1">
-                                <button
-                                  type="button"
-                                  aria-label={`Move ${teamNumber} up`}
-                                  disabled={index === 0}
-                                  onClick={() => handleMove(index, index - 1)}
-                                  className="rounded border border-graphite-200 px-2 py-1 text-xs text-graphite-600 transition hover:border-graphite-300 disabled:opacity-30"
-                                >
-                                  ↑
-                                </button>
-                                <button
-                                  type="button"
-                                  aria-label={`Move ${teamNumber} down`}
-                                  disabled={index === order.length - 1}
-                                  onClick={() => handleMove(index, index + 1)}
-                                  className="rounded border border-graphite-200 px-2 py-1 text-xs text-graphite-600 transition hover:border-graphite-300 disabled:opacity-30"
-                                >
-                                  ↓
-                                </button>
-                                <button
-                                  type="button"
-                                  aria-label={`Move ${teamNumber} to Do Not Pick`}
-                                  onClick={() => handleDoNotPick(teamNumber)}
-                                  className="rounded border border-maroon-200 dark:border-maroon-700 px-2 py-1 text-xs font-medium text-maroon-700 dark:text-maroon-300 transition hover:border-maroon-400"
-                                  title="Move to Do Not Pick"
-                                >
-                                  DNP
-                                </button>
-                              </span>
-                            </td>
-                          )}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                          );
+                        }
+                      : undefined
+                  }
+                />
               </div>
 
               <section className="flex flex-col gap-3">
@@ -487,89 +502,26 @@ export default function PicklistPage() {
                   </p>
                 ) : (
                   <div className="surface-card overflow-x-auto border-maroon-200 dark:border-maroon-700">
-                    <table className="data-table">
-                      <thead>
-                        <tr className="border-b border-maroon-100 text-xs uppercase tracking-wider text-graphite-500">
-                          <th className="px-3 py-2.5">Team</th>
-                          <th className="px-3 py-2.5">Name</th>
-                          <th className="px-3 py-2.5">EPA</th>
-                          <th className="px-3 py-2.5">Avg auto</th>
-                          <th className="px-3 py-2.5">Avg teleop</th>
-                          <th className="px-3 py-2.5">Avg driver</th>
-                          <th className="px-3 py-2.5">Avg defense</th>
-                          <th className="px-3 py-2.5">Matches</th>
-                          <th className="px-3 py-2.5">Notes</th>
-                          {isAdmin && (
-                            <th className="px-3 py-2.5" aria-label="Restore" />
-                          )}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-graphite-100">
-                        {doNotPick.map((teamNumber) => {
-                          const info = teamsByNumber.get(teamNumber);
-                          const agg = aggregates.get(String(teamNumber));
-                          const auto = phaseAvg(agg, autoIds);
-                          const teleop = phaseAvg(agg, teleopIds);
-                          return (
-                            <tr
-                              key={teamNumber}
-                              className="bg-maroon-50/40 transition hover:bg-maroon-50"
-                            >
-                              <td className="stat px-3 py-2 font-semibold">
-                                <span className="inline-flex items-center gap-1.5">
-                                  {teamNumber}
-                                  <ReliabilityWarning teamNumber={teamNumber} />
-                                </span>
-                              </td>
-                              <td className="px-3 py-2">
-                                {info?.nickname ?? "—"}
-                              </td>
-                              <td className="stat px-3 py-2">
-                                {info?.epa != null ? info.epa.toFixed(1) : "—"}
-                              </td>
-                              <td className="stat px-3 py-2">
-                                {auto !== null && agg ? auto.toFixed(1) : "—"}
-                              </td>
-                              <td className="stat px-3 py-2">
-                                {teleop !== null && agg ? teleop.toFixed(1) : "—"}
-                              </td>
-                              <td className="stat px-3 py-2">
-                                {ratingAvg(agg, "driverSkill")}
-                              </td>
-                              <td className="stat px-3 py-2">
-                                {ratingAvg(agg, "defenseSkill")}
-                              </td>
-                              <td className="stat px-3 py-2">
-                                {agg?.matches ?? 0}
-                              </td>
-                              <td className="px-3 py-2">
-                                <TeamNote
-                                  teamNumber={teamNumber}
-                                  saved={notes[String(teamNumber)] ?? ""}
-                                  onSave={(text) =>
-                                    void saveNotes({
-                                      ...notes,
-                                      [String(teamNumber)]: text,
-                                    })
-                                  }
-                                />
-                              </td>
-                              {isAdmin && (
-                                <td className="px-3 py-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRestore(teamNumber)}
-                                    className="rounded border border-graphite-200 px-2.5 py-1 text-xs font-medium text-graphite-600 transition hover:border-graphite-300"
-                                  >
-                                    Restore
-                                  </button>
-                                </td>
-                              )}
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                    <PicklistTable
+                      columns={dnpColumns}
+                      rows={dnpRows}
+                      sort={null}
+                      isAdmin={isAdmin}
+                      onNoteChange={handleNoteChange}
+                      renderActions={
+                        isAdmin
+                          ? (row) => (
+                              <button
+                                type="button"
+                                onClick={() => handleRestore(row.teamNumber)}
+                                className="rounded border border-graphite-200 px-2.5 py-1 text-xs font-medium text-graphite-600 transition hover:border-graphite-300"
+                              >
+                                Restore
+                              </button>
+                            )
+                          : undefined
+                      }
+                    />
                   </div>
                 )}
               </section>
@@ -599,38 +551,6 @@ export default function PicklistPage() {
         </>
       )}
     </main>
-  );
-}
-
-/**
- * A team's picklist note. Kept as local draft state while typing and pushed
- * on blur, so a keystroke isn't a Firestore write and a remote edit can't
- * yank the caret mid-sentence.
- */
-function TeamNote({
-  teamNumber,
-  saved,
-  onSave,
-}: {
-  teamNumber: number;
-  saved: string;
-  onSave: (text: string) => void;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const value = draft ?? saved;
-  return (
-    <textarea
-      aria-label={`Notes on team ${teamNumber}`}
-      rows={2}
-      value={value}
-      placeholder="Notes…"
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => {
-        if (draft !== null && draft !== saved) onSave(draft);
-        setDraft(null);
-      }}
-      className="w-56 resize-y rounded border border-graphite-200 bg-transparent px-2 py-1 text-xs text-graphite-900 transition placeholder:text-graphite-400 hover:border-graphite-300 focus:border-maroon-400 focus:outline-none"
-    />
   );
 }
 

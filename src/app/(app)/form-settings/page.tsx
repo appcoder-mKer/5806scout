@@ -1,6 +1,7 @@
 "use client";
 
 import { AppearanceEditor } from "@/components/AppearanceEditor";
+import { PicklistSettings } from "@/components/PicklistSettings";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import {
   CUSTOM_SECTION_TITLE,
@@ -27,13 +28,19 @@ import { useState } from "react";
 // season questions can be struck or deleted here but not restyled — and the
 // ones the Drive Dash predictor reads get a warning before they go.
 type FormKey = "pitScout" | "matchScout";
-type Tab = FormKey | "website";
+type Tab = FormKey | "picklist" | "website";
 
 const TAB_LABELS: Record<Tab, string> = {
   pitScout: "Pit Scout",
   matchScout: "Match Scout",
+  picklist: "Picklist",
   website: "Website Customization",
 };
+
+/** Tabs that edit a scout form; the rest own their own editor and save. */
+function isFormTab(tab: Tab): tab is FormKey {
+  return tab === "pitScout" || tab === "matchScout";
+}
 
 const FORMS: Record<
   FormKey,
@@ -116,7 +123,7 @@ export default function FormSettingsPage() {
   const [tab, setTab] = useState<Tab>("pitScout");
   // Form editing only ever operates on a real form; on the other tabs this
   // falls back to pitScout but the form body below isn't rendered.
-  const formKey: FormKey = tab === "website" ? "pitScout" : tab;
+  const formKey: FormKey = isFormTab(tab) ? tab : "pitScout";
   // Local working copy of both customizations — null until the first edit,
   // when it forks from the live config. Edits stay local until Save writes
   // the whole doc back.
@@ -399,7 +406,9 @@ export default function FormSettingsPage() {
         <p className="page-lede">
           {tab === "website"
             ? "Brand the app for your team — accent color, background, font, and the top-left logo. Changes apply to everyone."
-            : `Tune the ${FORMS[formKey].label} form for your team — uncheck a question to strike it out, trash it to remove it, delete a whole section, add your own sections and questions. Changes apply to everyone on the team.`}
+            : tab === "picklist"
+              ? "Choose which criteria the Picklist table shows. The metrics come from your Match Scout questions, so this list follows whatever you set up there."
+              : `Tune the ${FORMS[formKey].label} form for your team — uncheck a question to strike it out, trash it to remove it, delete a whole section, add your own sections and questions. Changes apply to everyone on the team.`}
         </p>
       </div>
 
@@ -422,13 +431,15 @@ export default function FormSettingsPage() {
 
       {tab === "website" && <AppearanceEditor />}
 
-      {tab !== "website" && !draft && (
+      {tab === "picklist" && <PicklistSettings />}
+
+      {isFormTab(tab) && !draft && (
         <div className="surface-panel px-6 py-10 text-center text-sm text-graphite-500">
           Loading your team&apos;s form settings…
         </div>
       )}
 
-      {tab !== "website" && draft && (
+      {isFormTab(tab) && draft && (
         <>
           {formKey === "matchScout" && (
             <p className="surface-panel px-4 py-3 text-xs text-graphite-500">
