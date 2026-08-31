@@ -65,6 +65,7 @@ function mockFetchSequence(
         fields: {
           role: { stringValue: "admin" },
           teamId: { stringValue: "team-1" },
+          status: { stringValue: "approved" },
         },
       });
     }
@@ -128,6 +129,77 @@ describe("inviteScout", () => {
     await expect(
       inviteScout("caller-token", "Ada", "ada@team.org"),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("refuses an admin who is not approved yet", async () => {
+    // Role alone is no longer the whole answer: an account can hold role
+    // "admin" while still sitting at the approval gate, and this route runs
+    // outside the rules that would otherwise stop it.
+    vi.stubGlobal(
+      "fetch",
+      mockFetchSequence({
+        getProfile: () =>
+          jsonResponse({
+            fields: {
+              role: { stringValue: "admin" },
+              teamId: { stringValue: "team-1" },
+              status: { stringValue: "pending" },
+            },
+          }),
+      }),
+    );
+
+    await expect(
+      inviteScout("caller-token", "Ada", "ada@team.org"),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("refuses an admin whose profile predates the status field", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchSequence({
+        getProfile: () =>
+          jsonResponse({
+            fields: {
+              role: { stringValue: "admin" },
+              teamId: { stringValue: "team-1" },
+            },
+          }),
+      }),
+    );
+
+    await expect(
+      inviteScout("caller-token", "Ada", "ada@team.org"),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("approves the invitee with the admin's own token, and only that field", async () => {
+    // An admin who typed someone's address has already vouched for them, so
+    // the invitee skips the queue. Two things have to be right: the write uses
+    // the CALLER's token (the invitee's own could never lift its own status),
+    // and it carries an updateMask — a Firestore REST PATCH without one
+    // REPLACES the document, which would reduce the profile to a lone field.
+    const fetchMock = mockFetchSequence({});
+    vi.stubGlobal("fetch", fetchMock);
+
+    await inviteScout("caller-token", "Ada Lovelace", "ada@team.org");
+
+    const approve = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        typeof url === "string" &&
+        url.includes("firestore.googleapis.com") &&
+        url.includes("updateMask.fieldPaths=status") &&
+        init?.method === "PATCH",
+    );
+    expect(approve).toBeDefined();
+
+    const init = approve![1] as RequestInit;
+    expect(
+      (init.headers as Record<string, string>).Authorization,
+    ).toBe("Bearer caller-token");
+    expect(JSON.parse(init.body as string)).toEqual({
+      fields: { status: { stringValue: "approved" } },
+    });
   });
 
   it("throws 403 when the caller has no teamId", async () => {

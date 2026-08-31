@@ -79,3 +79,35 @@ checked without standing up Firebase.
 
 [MIT](LICENSE) — do what you like with it. If it saves another team a
 weekend of spreadsheet wrangling, that's the point.
+
+## First-run setup
+
+Two one-time steps in the Firebase console. Without the first, nobody can
+administer the app at all.
+
+**1. Make yourself the operator.** In Firestore, create a document at
+`owners/<your-auth-uid>` (any contents — its existence is the whole signal).
+Your uid is in Authentication → Users.
+
+This document is the app's root of trust. `firestore.rules` forbids every
+client from writing one, which is what stops a bug in the app from handing out
+operator rights — and it is why the document has to be made by hand. As the
+operator you review new teams at `/owner`: a team's first member files a claim
+with evidence that they're really on it, and you approve them as that team's
+first admin. From there each team runs its own roster.
+
+**2. Enable Anonymous sign-in** (Authentication → Sign-in method). This backs
+guest mode, where a visitor sees the whole app against real event data with
+nothing saved anywhere. Anonymous accounts accumulate under Authentication
+unless you turn on Firebase's 30-day auto-cleanup.
+
+### Deploying the approval gate over an existing roster
+
+Approval fails closed: a profile with no `status` counts as pending, so
+deploying this locks out **every existing account, admins included**. That is
+deliberate — an app that was open to anyone can't tell which of its accounts
+were ever vouched for. Do step 1 *before* deploying, or the door shuts with
+nobody holding a key. Then deploy the rules and the app together
+(`firebase deploy --only firestore:rules`), open `/owner` → "Teams with no
+admin", pick each team's first admin, and let them re-approve their roster
+from the Team tab.

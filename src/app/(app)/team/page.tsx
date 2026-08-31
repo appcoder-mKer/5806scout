@@ -24,6 +24,7 @@ import {
   type ScoutDuty,
 } from "@/lib/scoutDuty";
 import { showsInRoster } from "@/lib/emailVerification";
+import { memberStatus, type MemberStatus } from "@/lib/membership";
 import type { EventData } from "@/lib/eventData";
 import { auth, db } from "@/lib/firebase/client";
 import {
@@ -91,7 +92,7 @@ async function writeScoutDuties(
 
 export default function TeamPage() {
   const router = useRouter();
-  const { profile, user, team, dataTeamId } = useAuth();
+  const { profile, user, team, dataTeamId, isGuest } = useAuth();
   const [roster, setRoster] = useState<UserProfile[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [event, setEvent] = useState<EventData | null>(null);
@@ -136,6 +137,7 @@ export default function TeamPage() {
                   role: (data.role as UserProfile["role"]) ?? "scout",
                   active: (data.active as boolean) ?? true,
                   emailVerified: data.emailVerified as boolean | undefined,
+                  status: data.status as UserProfile["status"],
                 };
               })
               .filter(showsInRoster),
@@ -181,13 +183,22 @@ export default function TeamPage() {
   }, [dataTeamId]);
 
   const isAdmin = profile?.role === "admin";
+  // Everyone the roster knows about, split by whether they're through the gate.
+  // Pending members are real teammates-in-waiting, not roster entries: they
+  // hold no data access at all until an admin acts (see src/lib/membership.ts).
+  const pendingMembers = roster.filter(
+    (m) => m.teamId === profile?.teamId && memberStatus(m) === "pending",
+  );
+  const approvedRoster = roster.filter((m) => memberStatus(m) === "approved");
   // Own team only: a sister team's admins are no help here, since neither
   // team may touch the other's roster.
-  const ownTeamAdmins = roster.filter(
+  const ownTeamAdmins = approvedRoster.filter(
     (m) => m.teamId === profile?.teamId && m.role === "admin",
   );
   const isLastAdmin = isAdmin && ownTeamAdmins.length <= 1;
-  const activeScouts = roster.filter((m) => m.role === "scout" && m.active);
+  const activeScouts = approvedRoster.filter(
+    (m) => m.role === "scout" && m.active,
+  );
   const activeScoutUids = activeScouts.map((m) => m.uid);
 
   // Only the three scouting duties reach an assignment run — a Viewer, the
@@ -374,6 +385,30 @@ export default function TeamPage() {
     }
   }
 
+  /**
+   * Let a teammate in, or turn them away. No evidence is involved here on
+   * purpose: an admin approving someone they see at every meeting doesn't need
+   * a photograph to know who they are. Evidence is only ever asked of a team's
+   * first member, who has no admin to vouch for them (src/lib/teamClaims.ts).
+   */
+  async function decideMember(member: UserProfile, status: MemberStatus) {
+    if (!profile) return;
+    if (
+      status === "denied" &&
+      !window.confirm(
+        `Turn down ${member.fullName}? They'll be told they weren't approved, and can't get in until you approve them here.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await updateDoc(doc(db, "users", member.uid), { status });
+    } catch {
+      setError("Could not update that request — check your connection.");
+    }
+  }
+
   async function toggleActive(member: UserProfile) {
     if (!profile) return;
     setError(null);
@@ -490,7 +525,8 @@ export default function TeamPage() {
             : ""}
         </h1>
         <p className="page-lede">
-          {roster.length} member{roster.length === 1 ? "" : "s"}.
+          {approvedRoster.length} member
+          {approvedRoster.length === 1 ? "" : "s"}.
           {isAdmin &&
             " Deactivated scouts keep their account but should hand off duties."}
         </p>
@@ -605,7 +641,11 @@ export default function TeamPage() {
       )}
 
 
-      {isAdmin && (
+      {/* Both this and "Add scout" below are hidden from a guest: linking to a
+          real team and emailing a real person are the two things in here that
+          would have to reach a server, and a demo that fails at them teaches
+          nothing. */}
+      {isAdmin && !isGuest && (
         <div className="surface-card flex flex-col gap-2 p-4">
           <p className="text-sm font-medium text-graphite-900">Sister team</p>
           {team?.sisterTeamId ? (
@@ -679,7 +719,7 @@ export default function TeamPage() {
         </div>
       )}
 
-      {isAdmin && (
+      {isAdmin && !isGuest && (
         <div className="flex flex-col gap-3">
           {!showInvite && (
             <button
@@ -762,8 +802,51 @@ export default function TeamPage() {
         </p>
       )}
 
+      {isAdmin && pendingMembers.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm font-medium text-graphite-900">
+            Waiting for approval
+          </p>
+          <p className="text-xs text-graphite-500">
+            They&apos;ve confirmed their email but can&apos;t see any of your
+            scouting data until you say so.
+          </p>
+          <ul className="surface-card divide-y divide-graphite-100">
+            {pendingMembers.map((member) => (
+              <li
+                key={member.uid}
+                className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+              >
+                <div>
+                  <p className="text-sm font-medium text-graphite-900">
+                    {member.fullName}
+                  </p>
+                  <p className="text-xs text-graphite-500">{member.email}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void decideMember(member, "approved")}
+                    className="btn-primary px-3 py-1.5 text-sm"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void decideMember(member, "denied")}
+                    className="btn-secondary px-3 py-1.5 text-sm"
+                  >
+                    Decline
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <ul className="surface-card divide-y divide-graphite-100">
-        {roster.map((member) => (
+        {approvedRoster.map((member) => (
           <li
             key={member.uid}
             className="flex items-center justify-between gap-3 px-4 py-3 transition hover:bg-graphite-50"

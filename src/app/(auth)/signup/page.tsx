@@ -1,6 +1,7 @@
 "use client";
 
 import { GoogleSignInButton } from "@/components/GoogleSignInButton";
+import { GuestSignInButton } from "@/components/GuestSignInButton";
 import { PasswordField } from "@/components/PasswordField";
 import { needsEmailVerification } from "@/lib/emailVerification";
 import { auth, db } from "@/lib/firebase/client";
@@ -25,15 +26,17 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
   const [teamNumber, setTeamNumber] = useState("");
-  const [asAdmin, setAsAdmin] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   // Creates the team (if new) + user profile docs for a freshly
   // authenticated user. Shared by the email/password and Google paths.
   //
-  // A team can have any number of admins, so signing up as one only writes
-  // role: "admin" on the profile — nothing on the team doc is claimed.
+  // Signing up no longer decides anything about who you are. Everyone starts
+  // as a pending scout and someone else lets them in — an admin of an existing
+  // team, or the app's operator for a team's first member (see
+  // src/lib/membership.ts). firestore.rules pins both fields at create time,
+  // so this is the shape it will accept, not merely the shape we send.
   async function createProfileAndTeam(newUser: User, teamId: string): Promise<boolean> {
     const teamRef = doc(db, "teams", teamId);
     const userRef = doc(db, "users", newUser.uid);
@@ -56,7 +59,8 @@ export default function SignupPage() {
           email: newUser.email ?? email,
           fullName: fullName.trim() || newUser.displayName || "",
           teamId,
-          role: asAdmin ? "admin" : "scout",
+          role: "scout",
+          status: "pending",
           active: true,
           // The roster reads verification from here, so the profile starts
           // out saying what the gate would: false for a typed-in address,
@@ -154,13 +158,12 @@ export default function SignupPage() {
       <div className="flex flex-1 items-center justify-center px-4 py-12">
       <div className="w-full max-w-sm">
         <h1 className="text-2xl font-semibold text-graphite-900">
-          {asAdmin ? "Create an admin account" : "Create a scout account"}
+          Create an account
         </h1>
         <p className="page-lede">
-          Scouts sign up with just the form below, then confirm the emailed
-          link. A team can have as many admins as it needs — tick the box to
-          sign up as one, or have an existing admin promote you from the Team
-          tab.
+          Confirm the emailed link, then wait for one of your team&apos;s admins
+          to approve you. If nobody has set your team up yet, we&apos;ll ask you
+          to show you&apos;re on it — and you&apos;ll be its first admin.
         </p>
 
         <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
@@ -201,16 +204,6 @@ export default function SignupPage() {
             minLength={6}
           />
 
-          <label className="flex items-center gap-2 text-sm text-graphite-700">
-            <input
-              type="checkbox"
-              checked={asAdmin}
-              onChange={(e) => setAsAdmin(e.target.checked)}
-              className="h-4 w-4 accent-maroon-600"
-            />
-            Sign up as Admin
-          </label>
-
           {error && (
             <p className="badge-error rounded-md px-3 py-2 text-sm normal-case tracking-normal">
               {error}
@@ -236,6 +229,7 @@ export default function SignupPage() {
             onClick={() => void handleGoogle()}
             disabled={submitting}
           />
+          <GuestSignInButton />
           <p className="text-center text-xs text-graphite-500">
             With Google you can skip the email and password — just fill in your
             team number first.

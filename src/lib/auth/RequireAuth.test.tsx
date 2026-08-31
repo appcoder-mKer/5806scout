@@ -10,12 +10,14 @@ const {
   sendEmailVerificationMock,
   signOutMock,
   updateDocMock,
+  onSnapshotMock,
 } = vi.hoisted(() => ({
   useAuthMock: vi.fn(),
   replaceMock: vi.fn(),
   sendEmailVerificationMock: vi.fn(),
   signOutMock: vi.fn(),
   updateDocMock: vi.fn(async () => {}),
+  onSnapshotMock: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/AuthProvider", () => ({
@@ -36,6 +38,9 @@ vi.mock("firebase/auth", () => ({
 vi.mock("firebase/firestore", () => ({
   doc: (_db: unknown, ...path: string[]) => path.join("/"),
   updateDoc: updateDocMock,
+  onSnapshot: onSnapshotMock,
+  serverTimestamp: () => "server-timestamp",
+  setDoc: vi.fn(async () => {}),
 }));
 
 const AFTER_CUTOFF = new Date(VERIFICATION_REQUIRED_FROM + 1000).toISOString();
@@ -60,11 +65,21 @@ beforeEach(() => {
   sendEmailVerificationMock.mockReset();
   signOutMock.mockReset();
   updateDocMock.mockClear();
+  onSnapshotMock.mockReset();
+  // Default: no claim on file for this team, and the read was allowed.
+  onSnapshotMock.mockImplementation((_ref: unknown, cb: (s: unknown) => void) => {
+    cb({ exists: () => false, data: () => undefined });
+    return () => {};
+  });
 });
 
-/** A profile as the gate reads it — only `emailVerified` is ever touched. */
-function fakeProfile(emailVerified?: boolean) {
-  return { uid: "abc123", emailVerified };
+/**
+ * A profile as the gates read it: emailVerified for the first, status for the
+ * second. Approved by default so the email-gate tests below stay about the
+ * email gate.
+ */
+function fakeProfile(emailVerified?: boolean, status = "approved") {
+  return { uid: "abc123", teamId: "5806", emailVerified, status };
 }
 
 describe("RequireAuth", () => {
@@ -97,7 +112,7 @@ describe("RequireAuth", () => {
   it("renders children when authenticated and verified", () => {
     useAuthMock.mockReturnValue({
       user: fakeUser(),
-      profile: null,
+      profile: fakeProfile(true),
       loading: false,
     });
 
@@ -115,7 +130,11 @@ describe("RequireAuth", () => {
 describe("the email verification gate", () => {
   function renderUnverified(overrides: Record<string, unknown> = {}) {
     const user = fakeUser({ emailVerified: false, ...overrides });
-    useAuthMock.mockReturnValue({ user, profile: null, loading: false });
+    useAuthMock.mockReturnValue({
+      user,
+      profile: fakeProfile(true),
+      loading: false,
+    });
     render(
       <RequireAuth>
         <div>secret content</div>
@@ -282,7 +301,111 @@ describe("RequireAuth roster stamp", () => {
       </RequireAuth>,
     );
 
-    await screen.findByText("Scouting");
+    // No profile means no verdict to mirror — and, downstream, nothing for the
+    // approval gate to read either, so the app stays behind a spinner rather
+    // than guessing in either direction.
+    await screen.findByText("Loading…");
     expect(updateDocMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("the approval gate", () => {
+  function renderGate(auth: Record<string, unknown>) {
+    useAuthMock.mockReturnValue({
+      user: fakeUser({ emailVerified: true }),
+      loading: false,
+      isOwner: false,
+      team: null,
+      ...auth,
+    });
+    render(
+      <RequireAuth>
+        <p>Scouting</p>
+      </RequireAuth>,
+    );
+  }
+
+  it("opens the app to an approved member", async () => {
+    renderGate({ profile: fakeProfile(true, "approved") });
+    expect(await screen.findByText("Scouting")).toBeInTheDocument();
+  });
+
+  it("holds a member their team hasn't approved yet", async () => {
+    renderGate({
+      profile: fakeProfile(true, "pending"),
+      team: { teamNumber: "5806", claimedAt: "stamped" },
+    });
+
+    expect(await screen.findByText("Waiting for an admin")).toBeInTheDocument();
+    expect(screen.queryByText("Scouting")).not.toBeInTheDocument();
+  });
+
+  it("holds a profile written before approval existed", async () => {
+    // The migration, seen from the member's side: no status field means
+    // pending, so the gate closes over the existing roster on deploy rather
+    // than waving through everyone who happened to sign up first.
+    renderGate({
+      profile: { uid: "abc123", teamId: "5806", emailVerified: true },
+      team: { teamNumber: "5806", claimedAt: "stamped" },
+    });
+
+    expect(await screen.findByText("Waiting for an admin")).toBeInTheDocument();
+    expect(screen.queryByText("Scouting")).not.toBeInTheDocument();
+  });
+
+  it("tells a declined member where they stand", async () => {
+    renderGate({
+      profile: fakeProfile(true, "denied"),
+      team: { teamNumber: "5806", claimedAt: "stamped" },
+    });
+
+    expect(await screen.findByText("Not approved")).toBeInTheDocument();
+  });
+
+  it("offers the claim form when nobody has set the team up", async () => {
+    // No claimedAt on the team doc: this member has no admin to ask, so they
+    // get the evidence form and the operator reviews it.
+    renderGate({
+      profile: fakeProfile(true, "pending"),
+      team: { teamNumber: "5806" },
+    });
+
+    expect(await screen.findByText("Set up your team")).toBeInTheDocument();
+  });
+
+  it("says so when someone else already claimed the team", async () => {
+    // Being refused the read IS the answer: the rules let anyone read a claim
+    // that doesn't exist, and only its requester read one that does.
+    onSnapshotMock.mockImplementation(
+      (_ref: unknown, _cb: unknown, onError: (e: unknown) => void) => {
+        onError(new Error("permission-denied"));
+        return () => {};
+      },
+    );
+    renderGate({
+      profile: fakeProfile(true, "pending"),
+      team: { teamNumber: "5806" },
+    });
+
+    expect(await screen.findByText("Already requested")).toBeInTheDocument();
+    expect(screen.queryByText("Set up your team")).not.toBeInTheDocument();
+  });
+
+  it("lets the operator past — they are the ones who review claims", async () => {
+    renderGate({ profile: fakeProfile(true, "pending"), isOwner: true });
+    expect(await screen.findByText("Scouting")).toBeInTheDocument();
+  });
+
+  it("runs after the email gate, not before it", async () => {
+    // Otherwise a team's admins would be judging requests from addresses
+    // nobody had confirmed yet.
+    renderGate({
+      user: fakeUser({ emailVerified: false }),
+      profile: fakeProfile(false, "pending"),
+      team: { teamNumber: "5806", claimedAt: "stamped" },
+    });
+
+    expect(await screen.findByText("Verify your email")).toBeInTheDocument();
+    expect(screen.queryByText("Waiting for an admin")).not.toBeInTheDocument();
   });
 });

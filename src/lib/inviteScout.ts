@@ -10,7 +10,11 @@ import { config } from "@/lib/config";
 //     password they never see.
 //  4. Firestore REST       — create users/{uid} for the invitee using the
 //     invitee's own ID token (rules: users may create their own profile).
-//  5. accounts:sendOobCode — Firebase emails them a password-reset link,
+//  5. Firestore REST       — approve that profile using the CALLER's token.
+//     Rules force every self-created profile to start pending, and an admin
+//     who typed someone's address has already vouched for them; making them
+//     queue behind the admin who invited them would be theatre.
+//  6. accounts:sendOobCode — Firebase emails them a password-reset link,
 //     which is how they set their real password.
 
 const IDENTITY_BASE = "https://identitytoolkit.googleapis.com/v1";
@@ -79,6 +83,7 @@ function firestoreDocUrl(uid: string): string {
 interface CallerProfile {
   role: string;
   teamId: string;
+  status: string;
 }
 
 async function getCallerProfile(
@@ -95,11 +100,15 @@ async function getCallerProfile(
     fields?: {
       role?: { stringValue?: string };
       teamId?: { stringValue?: string };
+      status?: { stringValue?: string };
     };
   };
   return {
     role: doc.fields?.role?.stringValue ?? "",
     teamId: doc.fields?.teamId?.stringValue ?? "",
+    // Absent means pending, matching memberStatus() on the client and the
+    // .get('status','pending') default in firestore.rules.
+    status: doc.fields?.status?.stringValue ?? "pending",
   };
 }
 
@@ -171,6 +180,10 @@ export async function inviteScout(
   if (caller.role !== "admin" || !caller.teamId) {
     throw new InviteError("Only team admins can add scouts.", 403);
   }
+  // An admin who hasn't been approved yet is not an admin yet.
+  if (caller.status !== "approved") {
+    throw new InviteError("Only team admins can add scouts.", 403);
+  }
 
   // The invitee never sees this password — they set their own via the
   // password-reset email below.
@@ -204,6 +217,9 @@ export async function inviteScout(
             fullName: { stringValue: fullName },
             teamId: { stringValue: caller.teamId },
             role: { stringValue: "scout" },
+            // Rules pin this to "pending" at create time even for an invite;
+            // the caller's own token lifts it a moment later, below.
+            status: { stringValue: "pending" },
             active: { booleanValue: true },
             // An invited address is still just an address someone typed, so
             // it starts unverified and stays off the roster (showsInRoster)
@@ -223,6 +239,34 @@ export async function inviteScout(
       () => undefined,
     );
     throw err;
+  }
+
+  // The vouching step. Done with the CALLER's token, which the rules accept
+  // via their isAdminOfTeam branch; the invitee's own token could never do it.
+  // A failure here leaves a real account stuck at the approval gate, which the
+  // admin can clear from the Team tab — so say so rather than rolling back a
+  // login they may already have been told about.
+  const approveRes = await fetch(
+    // updateMask is not optional here: a Firestore REST PATCH without one
+    // REPLACES the document with the fields sent, which would reduce the
+    // profile we just wrote to a lone status field.
+    `${firestoreDocUrl(created.localId)}?updateMask.fieldPaths=status`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${callerIdToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fields: { status: { stringValue: "approved" } },
+      }),
+    },
+  );
+  if (!approveRes.ok) {
+    throw new InviteError(
+      "The account was created but couldn't be approved automatically — approve them from the Team tab.",
+      502,
+    );
   }
 
   try {

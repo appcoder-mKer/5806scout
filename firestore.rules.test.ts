@@ -70,12 +70,43 @@ beforeEach(async () => {
       sisterTeamId: "teamA",
     });
 
-    await setDoc(doc(db, "users/alice"), { teamId: "teamA", role: "admin" });
-    await setDoc(doc(db, "users/bob"), { teamId: "teamB", role: "scout" });
-    await setDoc(doc(db, "users/bea"), { teamId: "teamB", role: "admin" });
-    await setDoc(doc(db, "users/erin"), { teamId: "teamA", role: "scout" });
-    await setDoc(doc(db, "users/carol"), { teamId: "teamC", role: "admin" });
-    await setDoc(doc(db, "users/dave"), { teamId: "teamD", role: "admin" });
+    // Established members: approved is what everyone in these tests is unless
+    // the test is about not being.
+    const member = (teamId: string, role: string) => ({
+      teamId,
+      role,
+      status: "approved",
+    });
+    await setDoc(doc(db, "users/alice"), member("teamA", "admin"));
+    await setDoc(doc(db, "users/bob"), member("teamB", "scout"));
+    await setDoc(doc(db, "users/bea"), member("teamB", "admin"));
+    await setDoc(doc(db, "users/erin"), member("teamA", "scout"));
+    await setDoc(doc(db, "users/carol"), member("teamC", "admin"));
+    await setDoc(doc(db, "users/dave"), member("teamD", "admin"));
+
+    // Waiting at the gate. Pat has a status and is pending; quinn's profile
+    // predates the field entirely, which must amount to the same thing.
+    await setDoc(doc(db, "users/pat"), {
+      teamId: "teamA",
+      role: "scout",
+      status: "pending",
+    });
+    await setDoc(doc(db, "users/quinn"), { teamId: "teamA", role: "scout" });
+    // Role without approval is not authority.
+    await setDoc(doc(db, "users/mallory"), {
+      teamId: "teamA",
+      role: "admin",
+      status: "pending",
+    });
+
+    // The operator. Created by hand in the console in production; there is no
+    // code path anywhere that writes one.
+    await setDoc(doc(db, "owners/olive"), { createdAt: 0 });
+    await setDoc(doc(db, "users/olive"), {
+      teamId: "teamC",
+      role: "scout",
+      status: "approved",
+    });
 
     // teamA's scouting data, which teamB should reach and the others must not.
     for (const collection of POOLED) {
@@ -174,9 +205,15 @@ describe("a one-sided link", () => {
 // signup rather than being promoted. What must stay shut is self-promotion —
 // the rules are the only thing stopping a scout typing themselves a new role.
 describe("who may become an admin", () => {
-  it("lets a second admin sign up for a team that already has one", async () => {
-    // teamC already has carol as an admin.
-    await assertSucceeds(
+  it("no longer lets anyone sign up as an admin at all", async () => {
+    // This test used to assert the opposite — that a second admin could just
+    // sign up for a team that already had one — and that was the hole: the
+    // team number is printed on the robot, so "knows the number" was the only
+    // qualification anyone needed to become that team's admin.
+    //
+    // Admin is now granted only: by the operator to a team's founder, or by an
+    // existing admin promoting a teammate (both covered below).
+    await assertFails(
       setDoc(doc(as("frank"), "users/frank"), {
         teamId: "teamC",
         role: "admin",
@@ -298,5 +335,276 @@ describe("the pooled list", () => {
       .map((m) => m[1])
       .filter((name) => name !== "config");
     expect(sistered.sort()).toEqual([...POOLED].sort());
+  });
+});
+
+describe("who may join a team", () => {
+  it("holds a pending member out of their own team's data", async () => {
+    // The whole point. Pat's profile says teamA, and that is now worth nothing
+    // on its own — until an admin approves them they are a stranger with a
+    // matching team number, which is exactly what the old signup form let
+    // anyone become.
+    await assertFails(getDoc(doc(as("pat"), "teams/teamA/matchScouting/doc1")));
+    await assertFails(
+      setDoc(doc(as("pat"), "teams/teamA/matchScouting/new"), { x: 1 }),
+    );
+  });
+
+  it("holds a member whose profile predates the status field", async () => {
+    // The migration. A missing approval is not an approval, or the gate would
+    // wave through every account that happened to exist first.
+    await assertFails(
+      getDoc(doc(as("quinn"), "teams/teamA/matchScouting/doc1")),
+    );
+  });
+
+  it("gives an unapproved admin no authority at all", async () => {
+    // Role is granted at approval time, so this combination shouldn't arise —
+    // but if it ever did, it must be inert rather than a way past the gate.
+    await assertFails(
+      setDoc(doc(as("mallory"), "users/erin"), {
+        teamId: "teamA",
+        role: "admin",
+        status: "approved",
+      }),
+    );
+    await assertFails(
+      deleteDoc(doc(as("mallory"), "teams/teamA/matchScouting/doc1")),
+    );
+  });
+
+  it("hides a pending member's teammates from them", async () => {
+    await assertFails(getDoc(doc(as("pat"), "users/alice")));
+  });
+
+  it("still lets a pending member read their own profile", async () => {
+    // Or the approval screen would have nothing to tell them.
+    await assertSucceeds(getDoc(doc(as("pat"), "users/pat")));
+  });
+
+  it("never lets a member approve themselves", async () => {
+    await assertFails(
+      setDoc(doc(as("pat"), "users/pat"), {
+        teamId: "teamA",
+        role: "scout",
+        status: "approved",
+      }),
+    );
+  });
+
+  it("never lets a member with no status quietly grant themselves one", async () => {
+    // The .get('status','pending') default has to hold on BOTH sides of the
+    // comparison, or a profile that predates the field could add an approved
+    // one from nothing.
+    await assertFails(
+      setDoc(doc(as("quinn"), "users/quinn"), {
+        teamId: "teamA",
+        role: "scout",
+        status: "approved",
+      }),
+    );
+  });
+
+  it("still lets a member edit the rest of their own profile", async () => {
+    await assertSucceeds(
+      setDoc(doc(as("quinn"), "users/quinn"), {
+        teamId: "teamA",
+        role: "scout",
+        fullName: "Quinn Renamed",
+      }),
+    );
+  });
+
+  it("lets an approved admin approve a teammate", async () => {
+    await assertSucceeds(
+      setDoc(doc(as("alice"), "users/pat"), {
+        teamId: "teamA",
+        role: "scout",
+        status: "approved",
+      }),
+    );
+  });
+
+  it("never lets another team's admin approve into teamA", async () => {
+    await assertFails(
+      setDoc(doc(as("carol"), "users/pat"), {
+        teamId: "teamA",
+        role: "scout",
+        status: "approved",
+      }),
+    );
+  });
+
+  it("refuses a signup that awards itself admin", async () => {
+    // This is the hole that was here: the old rule allowed role 'admin' at
+    // create time, so anyone who knew a team number could sign up as its
+    // admin.
+    await assertFails(
+      setDoc(doc(as("newcomer"), "users/newcomer"), {
+        teamId: "teamA",
+        role: "admin",
+        status: "pending",
+        active: true,
+      }),
+    );
+  });
+
+  it("refuses a signup that awards itself approval", async () => {
+    await assertFails(
+      setDoc(doc(as("newcomer"), "users/newcomer"), {
+        teamId: "teamA",
+        role: "scout",
+        status: "approved",
+        active: true,
+      }),
+    );
+  });
+
+  it("accepts an ordinary signup — pending, scout, active", async () => {
+    await assertSucceeds(
+      setDoc(doc(as("newcomer"), "users/newcomer"), {
+        teamId: "teamA",
+        role: "scout",
+        status: "pending",
+        active: true,
+      }),
+    );
+  });
+});
+
+describe("the operator", () => {
+  it("reads and approves a member on a team they don't belong to", async () => {
+    await assertSucceeds(getDoc(doc(as("olive"), "users/pat")));
+    await assertSucceeds(
+      setDoc(doc(as("olive"), "users/pat"), {
+        teamId: "teamA",
+        role: "admin",
+        status: "approved",
+      }),
+    );
+  });
+
+  it("stamps a team as claimed", async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(as("olive"), "teams/teamC"),
+        { claimedAt: 1 },
+        { merge: true },
+      ),
+    );
+  });
+
+  it("cannot be appointed from inside the app", async () => {
+    // owners/{uid} is the one authority the app can't mint. If any of these
+    // succeeded, a bug in the app could hand out operator rights.
+    await assertFails(setDoc(doc(as("erin"), "owners/erin"), { x: 1 }));
+    await assertFails(setDoc(doc(as("alice"), "owners/alice"), { x: 1 }));
+    await assertFails(setDoc(doc(as("olive"), "owners/erin"), { x: 1 }));
+  });
+
+  it("keeps its own doc to itself", async () => {
+    await assertSucceeds(getDoc(doc(as("olive"), "owners/olive")));
+    await assertFails(getDoc(doc(as("erin"), "owners/olive")));
+  });
+});
+
+describe("team claims", () => {
+  const claim = (uid: string) => ({
+    teamId: "teamE",
+    teamNumber: "7777",
+    requestedByUid: uid,
+    evidenceKind: "pit-photo",
+    evidenceImage: "data:image/jpeg;base64,AAAA",
+    freshnessCode: "7777-ABCDEFGH",
+    status: "pending",
+  });
+
+  it("lets a founder file one for themselves", async () => {
+    await assertSucceeds(
+      setDoc(doc(as("frank"), "teamClaims/teamE"), claim("frank")),
+    );
+  });
+
+  it("never lets one be filed in someone else's name", async () => {
+    await assertFails(
+      setDoc(doc(as("frank"), "teamClaims/teamE"), claim("erin")),
+    );
+  });
+
+  it("never lets a claim arrive pre-approved", async () => {
+    await assertFails(
+      setDoc(doc(as("frank"), "teamClaims/teamE"), {
+        ...claim("frank"),
+        status: "approved",
+      }),
+    );
+  });
+
+  it("gives the first claim the team — a second cannot overwrite it", async () => {
+    await assertSucceeds(
+      setDoc(doc(as("frank"), "teamClaims/teamE"), claim("frank")),
+    );
+    await assertFails(
+      setDoc(doc(as("grace"), "teamClaims/teamE"), claim("grace")),
+    );
+  });
+
+  it("lets a founder read their own claim but nobody else's", async () => {
+    await setDoc(doc(as("frank"), "teamClaims/teamE"), claim("frank"));
+    await assertSucceeds(getDoc(doc(as("frank"), "teamClaims/teamE")));
+    // Being refused is itself the signal the approval gate reads: it means
+    // someone got here first, as opposed to no claim existing at all.
+    await assertFails(getDoc(doc(as("grace"), "teamClaims/teamE")));
+  });
+
+  it("lets anyone read a claim that does not exist", async () => {
+    // Without this, "nobody has claimed this team" and "someone else did"
+    // arrive as the same permission error and the gate can't tell them apart.
+    await assertSucceeds(getDoc(doc(as("grace"), "teamClaims/teamZ")));
+  });
+
+  it("never lets a founder approve their own claim", async () => {
+    await setDoc(doc(as("frank"), "teamClaims/teamE"), claim("frank"));
+    await assertFails(
+      setDoc(
+        doc(as("frank"), "teamClaims/teamE"),
+        { status: "approved" },
+        { merge: true },
+      ),
+    );
+  });
+
+  it("lets a declined founder send better evidence", async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "teamClaims/teamE"), {
+        ...claim("frank"),
+        status: "denied",
+      });
+    });
+    await assertSucceeds(
+      setDoc(
+        doc(as("frank"), "teamClaims/teamE"),
+        { evidenceImage: "data:image/jpeg;base64,BBBB", status: "pending" },
+        { merge: true },
+      ),
+    );
+  });
+
+  it("lets the operator decide, and nobody else", async () => {
+    await setDoc(doc(as("frank"), "teamClaims/teamE"), claim("frank"));
+    await assertFails(
+      setDoc(
+        doc(as("alice"), "teamClaims/teamE"),
+        { status: "approved" },
+        { merge: true },
+      ),
+    );
+    await assertSucceeds(
+      setDoc(
+        doc(as("olive"), "teamClaims/teamE"),
+        { status: "approved" },
+        { merge: true },
+      ),
+    );
   });
 });

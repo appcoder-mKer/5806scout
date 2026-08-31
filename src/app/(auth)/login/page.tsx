@@ -1,6 +1,7 @@
 "use client";
 
 import { GoogleSignInButton } from "@/components/GoogleSignInButton";
+import { GuestSignInButton } from "@/components/GuestSignInButton";
 import { PasswordField } from "@/components/PasswordField";
 import { auth, db } from "@/lib/firebase/client";
 import { FirebaseError } from "firebase/app";
@@ -147,6 +148,7 @@ export default function LoginPage() {
                 onClick={() => void handleGoogle()}
                 disabled={submitting}
               />
+              <GuestSignInButton />
             </form>
           </>
         ) : (

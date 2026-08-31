@@ -6,12 +6,23 @@ rules_version = '2';
 //   match scout, etc. added in later milestones) that inherit the same
 //   same-team read/write rule below.
 //
-// Admin signup: a team may have as many admins as it likes, and any of them
-// may arrive by signing up with the admin box ticked — hence 'admin' is
-// allowed on the profile at create time. Admins are also made after the fact,
-// by an existing admin promoting a teammate from the Team tab, which the
-// users/{uid} update rule below permits. What stays blocked is
-// self-escalation — a scout can never grant themselves the role.
+// Getting in: signing up grants nothing. Every profile is created pending and
+// as a scout — both pinned below — and somebody else decides:
+//
+//  - a team's own admin approves a teammate from the Team tab;
+//  - the app's OPERATOR approves a team's first member, who has no admin to
+//    vouch for them, after looking at the evidence they filed at
+//    teamClaims/{teamId}.
+//
+// Operator authority is owners/{uid}: a document created by hand in the
+// Firebase console, readable only by its owner and writable by nobody at all.
+// That is the one privilege the app cannot mint for itself, which is what
+// stops a bug in the app from handing it out.
+//
+// Admin is therefore only ever granted — by the operator to a founder, or by
+// an existing admin promoting a teammate. Self-escalation is blocked at both
+// ends: a member may not change their own role, and may not change their own
+// status either.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -23,8 +34,22 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    // Every client is created pending (below), so the default here is what
+    // holds an unapproved member out of their own team's data. Profiles
+    // written before approval existed have no such field, and .get()'s default
+    // sweeps them into the queue rather than through it — a missing approval
+    // is not an approval.
+    function isApproved() {
+      return myProfile().get('status', 'pending') == 'approved';
+    }
+
+    function isOwner() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/owners/$(request.auth.uid));
+    }
+
     function isSameTeam(teamId) {
-      return isSignedIn() && myProfile().teamId == teamId;
+      return isSignedIn() && myProfile().teamId == teamId && isApproved();
     }
 
     function isAdminOfTeam(teamId) {
@@ -41,6 +66,7 @@ service cloud.firestore {
     // redemption (below), so a lone forged sisterTeamId grants nothing.
     function isLinkedSisterTeam(teamId) {
       return isSignedIn()
+        && isApproved()
         && teamId != myTeamId()
         && get(/databases/$(database)/documents/teams/$(myTeamId())).data.sisterTeamId == teamId
         && get(/databases/$(database)/documents/teams/$(teamId)).data.sisterTeamId == myTeamId();
@@ -58,19 +84,24 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      // Signup: a user may only create their own active profile. 'admin' is
-      // permitted here because admins are no longer rationed one per team
-      // (see header comment).
+      // Signup: a user may only create their own profile, and only as a
+      // pending scout. This is the hole that used to be here — the old rule
+      // allowed 'admin' at create time, so anyone who knew a team number could
+      // sign up as that team's admin.
       allow create: if isSignedIn()
         && request.auth.uid == userId
-        && request.resource.data.role in ['scout', 'admin']
+        && request.resource.data.role == 'scout'
+        && request.resource.data.status == 'pending'
         && request.resource.data.active == true;
 
       // Read: yourself, any teammate (so scouts/admins can see the roster),
       // or a linked sister team's member — pooled scouting assignments need
       // both rosters.
+      // The operator branch carries no dependency on resource.data, so it also
+      // satisfies the unfiltered collection query /owner runs.
       allow read: if isSignedIn()
         && (request.auth.uid == userId
+          || isOwner()
           || isSameTeam(resource.data.teamId)
           || isLinkedSisterTeam(resource.data.teamId));
 
@@ -82,8 +113,14 @@ service cloud.firestore {
         && (
           (request.auth.uid == userId
             && request.resource.data.role == resource.data.role
-            && request.resource.data.teamId == resource.data.teamId)
+            && request.resource.data.teamId == resource.data.teamId
+            // Same default on both sides, because a profile that predates the
+            // field would otherwise throw here and lock its owner out of
+            // editing anything at all.
+            && request.resource.data.get('status', 'pending')
+                 == resource.data.get('status', 'pending'))
           || isAdminOfTeam(resource.data.teamId)
+          || isOwner()
         );
 
       allow delete: if false;
@@ -99,7 +136,7 @@ service cloud.firestore {
       // visitor is signed in. Listing the collection still requires
       // membership.
       allow get: if true;
-      allow list: if isSameTeam(teamId);
+      allow list: if isSameTeam(teamId) || isOwner();
 
       // Signing up as an admin no longer touches this doc at all — the role
       // lives on users/{uid}, and a team that already exists is simply joined.
@@ -109,7 +146,11 @@ service cloud.firestore {
       // doc itself, so any teammate can in practice write it. Nothing is
       // granted by that (authority comes from users/{uid}.role) — see the
       // "gains a scout nothing" case in firestore.rules.test.ts.
+      // The operator stamps claimedAt when a team gets its first admin — the
+      // flag a pending member reads to know whether to file a claim or simply
+      // wait for one of their own admins.
       allow update: if isAdminOfTeam(teamId)
+        || isOwner()
         // Sister-team link: the OTHER team's admin stamps this team's half
         // of the link by presenting a live invite code this team's admin
         // generated (sisterInvites/{code} with fromTeamId == this team).
@@ -186,6 +227,51 @@ service cloud.firestore {
             && resource.data.createdByUid == request.auth.uid
           );
       }
+    }
+
+    // Operator identity. Created by hand in the Firebase console and writable
+    // by nobody — see the header comment. The `get` is scoped to your own uid
+    // so a non-owner reading their own missing doc gets a clean "doesn't
+    // exist" instead of an error the client has to swallow.
+    match /owners/{ownerId} {
+      allow get: if isSignedIn() && request.auth.uid == ownerId;
+      allow list: if false;
+      allow write: if false;
+    }
+
+    // A team's first member proving the team is theirs, with the evidence
+    // attached (src/lib/teamClaims.ts). The evidence is a photograph of a
+    // student, so the operator's decision write deletes it in the same batch.
+    match /teamClaims/{teamId} {
+      // Reading a claim that DOESN'T exist is allowed, and that matters: it is
+      // how the approval gate tells "nobody has claimed this team, offer the
+      // form" apart from "someone else got here first", which would otherwise
+      // both arrive as the same permission error.
+      allow get: if isSignedIn()
+        && (resource == null
+          || resource.data.requestedByUid == request.auth.uid
+          || isOwner());
+      allow list: if isOwner();
+
+      // First claim wins — create only succeeds while the doc is absent.
+      allow create: if isSignedIn()
+        && request.resource.data.requestedByUid == request.auth.uid
+        && request.resource.data.status == 'pending';
+
+      // A declined founder may send better evidence, which puts the claim back
+      // in the queue; they can never move it out of one.
+      allow update: if isOwner()
+        || (
+          isSignedIn()
+          && resource.data.requestedByUid == request.auth.uid
+          && resource.data.status != 'approved'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.requestedByUid == resource.data.requestedByUid
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['evidenceKind', 'evidenceNote', 'evidenceImage', 'status'])
+        );
+
+      allow delete: if isOwner();
     }
 
     // One-time sister-team invite codes (src/lib/sisterTeamOps.ts). The

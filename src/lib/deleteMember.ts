@@ -49,6 +49,7 @@ interface MemberProfile {
   role: string;
   teamId: string;
   fullName: string;
+  status: string;
 }
 
 /** Read a profile with the service account, so one lookup shape works for the
@@ -69,12 +70,16 @@ async function getProfile(
       role?: { stringValue?: string };
       teamId?: { stringValue?: string };
       fullName?: { stringValue?: string };
+      status?: { stringValue?: string };
     };
   };
   return {
     role: doc.fields?.role?.stringValue ?? "",
     teamId: doc.fields?.teamId?.stringValue ?? "",
     fullName: doc.fields?.fullName?.stringValue ?? "",
+    // Absent means pending, matching memberStatus() and the
+    // .get('status','pending') default in firestore.rules.
+    status: doc.fields?.status?.stringValue ?? "pending",
   };
 }
 
@@ -189,7 +194,15 @@ export async function deleteMember(
   }
 
   const caller = await getProfile(callerUid, accessToken);
-  if (!caller || caller.role !== "admin" || !caller.teamId) {
+  // An admin still waiting on approval is not yet an admin — and this route
+  // runs on the service account, which bypasses the rules that would otherwise
+  // have caught it.
+  if (
+    !caller ||
+    caller.role !== "admin" ||
+    !caller.teamId ||
+    caller.status !== "approved"
+  ) {
     throw new DeleteMemberError("Only team admins can delete members.", 403);
   }
 

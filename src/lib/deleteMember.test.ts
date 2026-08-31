@@ -30,12 +30,18 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
 }
 
-function profileDoc(role: string, teamId: string, fullName = "Ada Lovelace") {
+function profileDoc(
+  role: string,
+  teamId: string,
+  fullName = "Ada Lovelace",
+  status = "approved",
+) {
   return jsonResponse({
     fields: {
       role: { stringValue: role },
       teamId: { stringValue: teamId },
       fullName: { stringValue: fullName },
+      status: { stringValue: status },
     },
   });
 }
