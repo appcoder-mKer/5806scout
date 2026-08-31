@@ -10,6 +10,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "ingest-manual": "node scripts/ingest-manual.ts",
+    "reset-approvals": "node --env-file=.env.local scripts/reset-approvals.ts",
     "test": "vitest run",
     "test:rules": "firebase emulators:exec --only firestore --project scout-rules-test \"vitest run --config vitest.rules.config.ts\"",
     "test:watch": "vitest"
