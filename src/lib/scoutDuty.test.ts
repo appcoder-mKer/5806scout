@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clampMatchesPerScout,
+  DEFAULT_ADMIN_DUTY,
   DEFAULT_DUTY,
   DEFAULT_MATCHES_PER_SCOUT,
   dutyFor,
@@ -20,6 +21,17 @@ describe("dutyFor", () => {
 
   it("returns the stored duty", () => {
     expect(dutyFor({ a: "driveTeam" }, "a")).toBe("driveTeam");
+  });
+
+  it("keeps an unlabelled admin out of the rotations", () => {
+    expect(DEFAULT_ADMIN_DUTY).toBe("viewer");
+    expect(dutyFor({}, "a", "admin")).toBe(DEFAULT_ADMIN_DUTY);
+    expect(dutyFor({}, "a", "scout")).toBe(DEFAULT_DUTY);
+  });
+
+  it("returns an admin's stored duty like anyone else's", () => {
+    expect(dutyFor({ a: "match" }, "a", "admin")).toBe("match");
+    expect(dutyFor({ a: "both" }, "a", "admin")).toBe("both");
   });
 });
 
@@ -50,27 +62,39 @@ describe("eligibleUids", () => {
     f: "pitCrew",
   };
 
+  const scouts = (...uids: string[]) =>
+    uids.map((uid) => ({ uid, role: "scout" as const }));
+  const admins = (...uids: string[]) =>
+    uids.map((uid) => ({ uid, role: "admin" as const }));
+
   it("keeps only the scouts whose duty covers the job", () => {
-    expect(eligibleUids("match", duties, ["a", "b", "c", "d", "e", "f"])).toEqual(
-      ["a", "b"],
-    );
-    expect(eligibleUids("pit", duties, ["a", "b", "c", "d", "e", "f"])).toEqual([
-      "a",
-      "c",
-    ]);
+    const crew = scouts("a", "b", "c", "d", "e", "f");
+    expect(eligibleUids("match", duties, crew)).toEqual(["a", "b"]);
+    expect(eligibleUids("pit", duties, crew)).toEqual(["a", "c"]);
   });
 
   it("includes unlabelled scouts in both jobs", () => {
-    expect(eligibleUids("match", {}, ["x", "y"])).toEqual(["x", "y"]);
-    expect(eligibleUids("pit", {}, ["x", "y"])).toEqual(["x", "y"]);
+    expect(eligibleUids("match", {}, scouts("x", "y"))).toEqual(["x", "y"]);
+    expect(eligibleUids("pit", {}, scouts("x", "y"))).toEqual(["x", "y"]);
+  });
+
+  it("leaves unlabelled admins out of both jobs", () => {
+    expect(eligibleUids("match", {}, admins("x"))).toEqual([]);
+    expect(eligibleUids("pit", {}, admins("x"))).toEqual([]);
+  });
+
+  it("puts an admin into whichever job their duty covers", () => {
+    const crew = admins("a", "b", "c", "d");
+    expect(eligibleUids("match", duties, crew)).toEqual(["a", "b"]);
+    expect(eligibleUids("pit", duties, crew)).toEqual(["a", "c"]);
   });
 
   it("preserves the order it was given", () => {
-    expect(eligibleUids("match", duties, ["b", "a"])).toEqual(["b", "a"]);
+    expect(eligibleUids("match", duties, scouts("b", "a"))).toEqual(["b", "a"]);
   });
 
   it("can come back empty when the whole crew is off scouting duty", () => {
-    expect(eligibleUids("match", duties, ["d", "e", "f"])).toEqual([]);
+    expect(eligibleUids("match", duties, scouts("d", "e", "f"))).toEqual([]);
   });
 });
 
@@ -115,6 +139,6 @@ describe("sanitizeScoutDutiesDoc", () => {
 
   it("an unrecognized duty leaves the scout on the default, not out of the rotation", () => {
     const doc = sanitizeScoutDutiesDoc({ duties: { a: "bogus" } });
-    expect(eligibleUids("match", doc.duties, ["a"])).toEqual(["a"]);
+    expect(eligibleUids("match", doc.duties, [{ uid: "a", role: "scout" }])).toEqual(["a"]);
   });
 });

@@ -17,6 +17,7 @@ import {
 } from "@/lib/assignments";
 import type { EventMatch } from "@/lib/eventData";
 import { isPlayed } from "@/lib/pitDashboard";
+import type { Role } from "@/lib/types";
 import {
   dutyFor,
   scoutsMatch,
@@ -129,6 +130,8 @@ function stateFor(
 export interface CrewMember {
   uid: string;
   name: string;
+  /** Decides the fallback duty for someone with none set; see dutyFor. */
+  role: Role;
 }
 
 /**
@@ -146,12 +149,12 @@ export function buildScoutStatuses(
   now: number,
 ): ScoutStatus[] {
   const rows = crew
-    .filter(({ uid }) => {
-      const duty = dutyFor(duties, uid);
+    .filter(({ uid, role }) => {
+      const duty = dutyFor(duties, uid, role);
       return scoutsMatch(duty) || scoutsPit(duty);
     })
-    .map(({ uid, name }) => {
-      const duty = dutyFor(duties, uid);
+    .map(({ uid, name, role }) => {
+      const duty = dutyFor(duties, uid, role);
       const behindCount = behindSlots(
         matchDoc?.slots ?? [],
         matches,

@@ -100,8 +100,8 @@ describe("remaining work", () => {
 
 describe("buildScoutStatuses", () => {
   const crew = [
-    { uid: "ana", name: "Ana" },
-    { uid: "raj", name: "Raj" },
+    { uid: "ana", name: "Ana", role: "scout" as const },
+    { uid: "raj", name: "Raj", role: "scout" as const },
   ];
   const duties: Record<string, ScoutDuty> = { ana: "both", raj: "both" };
   const matches = [match(1, true), match(2, false)];
@@ -196,6 +196,21 @@ describe("buildScoutStatuses", () => {
     expect(first.state).toBe("clear");
   });
 
+  it("lists an admin only once they carry a scouting duty", () => {
+    const boss = { uid: "lee", name: "Lee", role: "admin" as const };
+    expect(buildScoutStatuses([boss], {}, null, null, matches, {}, NOW)).toEqual([]);
+    const [first] = buildScoutStatuses(
+      [boss],
+      { lee: "match" },
+      null,
+      null,
+      matches,
+      {},
+      NOW,
+    );
+    expect(first).toMatchObject({ uid: "lee", state: "idle" });
+  });
+
   it("marks an unassigned scout idle rather than stalled", () => {
     const [first] = buildScoutStatuses([crew[0]], duties, null, null, matches, {}, NOW);
     expect(first.state).toBe("idle");
@@ -273,8 +288,8 @@ describe("needsAttention", () => {
   it("keeps only behind and stalled crew", () => {
     const statuses = buildScoutStatuses(
       [
-        { uid: "ana", name: "Ana" },
-        { uid: "raj", name: "Raj" },
+        { uid: "ana", name: "Ana", role: "scout" },
+        { uid: "raj", name: "Raj", role: "scout" },
       ],
       { ana: "both", raj: "both" },
       null,

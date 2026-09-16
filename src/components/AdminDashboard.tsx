@@ -419,7 +419,11 @@ function CrewStatus({
   const statuses = useMemo(
     () =>
       buildScoutStatuses(
-        roster.map((member) => ({ uid: member.uid, name: member.fullName })),
+        roster.map((member) => ({
+          uid: member.uid,
+          name: member.fullName,
+          role: member.role,
+        })),
         duties?.duties ?? {},
         pitDoc,
         matchDoc,

@@ -196,15 +196,14 @@ export default function TeamPage() {
     (m) => m.teamId === profile?.teamId && m.role === "admin",
   );
   const isLastAdmin = isAdmin && ownTeamAdmins.length <= 1;
-  const activeScouts = approvedRoster.filter(
-    (m) => m.role === "scout" && m.active,
-  );
-  const activeScoutUids = activeScouts.map((m) => m.uid);
+  // Admins are crew too: they carry a duty like anyone else, though an admin
+  // with none set counts as a Viewer rather than a scout (see dutyFor).
+  const activeCrew = approvedRoster.filter((m) => m.active);
 
   // Only the three scouting duties reach an assignment run — a Viewer, the
   // drive team, and the pit crew all have somewhere else to be.
-  const matchScoutUids = eligibleUids("match", dutiesDoc.duties, activeScoutUids);
-  const pitScoutUids = eligibleUids("pit", dutiesDoc.duties, activeScoutUids);
+  const matchScoutUids = eligibleUids("match", dutiesDoc.duties, activeCrew);
+  const pitScoutUids = eligibleUids("pit", dutiesDoc.duties, activeCrew);
   const matchesPerScout = clampMatchesPerScout(dutiesDoc.matchesPerScout);
   // Six stations need six scouts at all times, so a crew of six or fewer works
   // every match no matter how short the shift is set.
@@ -212,7 +211,7 @@ export default function TeamPage() {
     matchScoutUids.length > 0 && matchScoutUids.length <= 6;
 
   function scoutNames(): Record<string, string> {
-    return Object.fromEntries(activeScouts.map((m) => [m.uid, m.fullName]));
+    return Object.fromEntries(activeCrew.map((m) => [m.uid, m.fullName]));
   }
 
   async function saveDuties(next: Omit<ScoutDutiesDoc, "updatedAt">) {
@@ -562,13 +561,12 @@ export default function TeamPage() {
               Assign Match Scout
             </button>
           </div>
-          {event && activeScouts.length === 0 && (
+          {event && activeCrew.length === 0 && (
             <p className="text-xs text-amber-700">
-              No active members with the scout role — add or reactivate scouts
-              below.
+              No active members — add or reactivate scouts below.
             </p>
           )}
-          {event && activeScouts.length > 0 && (
+          {event && activeCrew.length > 0 && (
             <>
               {pitScoutUids.length === 0 && (
                 <p className="text-xs text-amber-700">
@@ -898,11 +896,12 @@ export default function TeamPage() {
                 </span>
               )}
               {/* Only the first three duties go into a rotation; the rest
-                  mark someone as busy elsewhere. Shown for scouts on either
-                  team of a sister pair, since both share the schedule. */}
-              {isAdmin && member.role === "scout" && member.active && (
+                  mark someone as busy elsewhere. Shown for scouts and admins
+                  on either team of a sister pair, since both share the
+                  schedule. */}
+              {isAdmin && member.active && (
                 <select
-                  value={dutyFor(dutiesDoc.duties, member.uid)}
+                  value={dutyFor(dutiesDoc.duties, member.uid, member.role)}
                   aria-label={`Scouting duty for ${member.fullName}`}
                   onChange={(e) =>
                     setDuty(member.uid, e.target.value as ScoutDuty)
@@ -916,9 +915,9 @@ export default function TeamPage() {
                   ))}
                 </select>
               )}
-              {!isAdmin && member.role === "scout" && member.active && (
+              {!isAdmin && member.active && (
                 <span className="rounded bg-graphite-100 px-1.5 py-0.5 text-xs font-semibold text-graphite-600">
-                  {DUTY_LABELS[dutyFor(dutiesDoc.duties, member.uid)]}
+                  {DUTY_LABELS[dutyFor(dutiesDoc.duties, member.uid, member.role)]}
                 </span>
               )}
               {/* Your own row gets one action: leave the team for good. The

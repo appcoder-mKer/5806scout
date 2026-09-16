@@ -8,6 +8,8 @@
 // firestore.rules only lets an admin write profiles belonging to their OWN
 // team. A shared config doc under the data team keeps one crew list for both.
 
+import type { Role } from "@/lib/types";
+
 export const SCOUT_DUTIES = [
   "both",
   "pit",
@@ -29,11 +31,19 @@ export const DUTY_LABELS: Record<ScoutDuty, string> = {
 };
 
 /**
- * What an unlabelled member counts as. "Match and Pit" keeps a freshly
+ * What an unlabelled scout counts as. "Match and Pit" keeps a freshly
  * invited scout in both rotations, which is what happened before duties
  * existed — nobody silently drops out of the schedule by default.
  */
 export const DEFAULT_DUTY: ScoutDuty = "both";
+
+/**
+ * What an unlabelled admin counts as. Admins can carry a scouting duty like
+ * anyone else, but only once someone opts them in: before admins had duties
+ * they were never in a rotation, and every team's next assignment run should
+ * look the way it did then.
+ */
+export const DEFAULT_ADMIN_DUTY: ScoutDuty = "viewer";
 
 export const SCOUT_DUTIES_DOC_ID = "scoutDuties";
 
@@ -100,8 +110,9 @@ export function sanitizeScoutDutiesDoc(data: unknown): ScoutDutiesDoc {
 export function dutyFor(
   duties: Readonly<Record<string, ScoutDuty>>,
   uid: string,
+  role: Role = "scout",
 ): ScoutDuty {
-  return duties[uid] ?? DEFAULT_DUTY;
+  return duties[uid] ?? (role === "admin" ? DEFAULT_ADMIN_DUTY : DEFAULT_DUTY);
 }
 
 export function scoutsMatch(duty: ScoutDuty): boolean {
@@ -119,8 +130,10 @@ export function scoutsPit(duty: ScoutDuty): boolean {
 export function eligibleUids(
   job: "match" | "pit",
   duties: Readonly<Record<string, ScoutDuty>>,
-  scoutUids: readonly string[],
+  crew: readonly { uid: string; role: Role }[],
 ): string[] {
   const covers = job === "match" ? scoutsMatch : scoutsPit;
-  return scoutUids.filter((uid) => covers(dutyFor(duties, uid)));
+  return crew
+    .filter(({ uid, role }) => covers(dutyFor(duties, uid, role)))
+    .map(({ uid }) => uid);
 }
