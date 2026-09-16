@@ -6,6 +6,8 @@ import {
   makeCustomFieldId,
   removeSectionFromCustomization,
   sanitizeScoutFormsConfig,
+  setFieldOverride,
+  updateCustomField,
   type CustomField,
 } from "./customForms";
 import { emptyValues, missingRequiredFields, type FormSection } from "./formSchema";
@@ -47,6 +49,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: ["endgame", "autoScoredLow"],
       removedFieldIds: [],
       customSections: [],
+      fieldOverrides: {},
       customFields: [],
     });
     expect(result).toEqual([
@@ -64,6 +67,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: ["autoScoredLow"],
       removedFieldIds: ["endgame"],
       customSections: [],
+      fieldOverrides: {},
       customFields: [],
     });
     expect(result).toEqual([
@@ -81,6 +85,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: [],
       removedFieldIds: [],
       customSections: [],
+      fieldOverrides: {},
       customFields: [custom({ id: "custom_climb", section: "Endgame", kind: "counter" })],
     });
     const endgame = result.find((s) => s.title === "Endgame");
@@ -92,6 +97,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: [],
       removedFieldIds: [],
       customSections: [],
+      fieldOverrides: {},
       customFields: [custom({ id: "custom_a" }), custom({ id: "custom_b" })],
     });
     const last = result[result.length - 1];
@@ -104,6 +110,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: ["endgame"],
       removedFieldIds: [],
       customSections: [],
+      fieldOverrides: {},
       customFields: [custom({ id: "custom_climb", section: "Endgame" })],
     });
     const endgame = result.find((s) => s.title === "Endgame");
@@ -115,6 +122,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: [],
       removedFieldIds: [],
       customSections: [],
+      fieldOverrides: {},
       customFields: [
         custom({ id: "endgame", label: "Impostor" }),
         custom({ id: "custom_a", label: "First" }),
@@ -131,6 +139,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: [],
       removedFieldIds: [],
       customSections: ["Defense", "Strategy"],
+      fieldOverrides: {},
       customFields: [
         custom({ id: "custom_strat", section: "Strategy" }),
         custom({ id: "custom_def", section: "Defense" }),
@@ -149,6 +158,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: [],
       removedFieldIds: [],
       customSections: ["Empty"],
+      fieldOverrides: {},
       customFields: [],
     });
     expect(result.map((s) => s.title)).toEqual(["Autonomous", "Endgame"]);
@@ -159,6 +169,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: [],
       removedFieldIds: [],
       customSections: ["Endgame"],
+      fieldOverrides: {},
       customFields: [custom({ id: "custom_climb", section: "Endgame" })],
     });
     expect(result.filter((s) => s.title === "Endgame")).toHaveLength(1);
@@ -172,6 +183,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: [],
       removedFieldIds: [],
       customSections: [],
+      fieldOverrides: {},
       customFields: [
         custom({ id: "custom_map", kind: "drawing", required: true }),
         custom({ id: "custom_pic", kind: "photo" }),
@@ -199,6 +211,7 @@ describe("applyCustomization", () => {
       hiddenFieldIds: [],
       removedFieldIds: [],
       customSections: [],
+      fieldOverrides: {},
       customFields: [
         custom({ id: "custom_req", required: true }),
         custom({ id: "custom_tally", kind: "counter" }),
@@ -311,6 +324,7 @@ describe("removeSectionFromCustomization", () => {
         removedFieldIds: [],
         customFields: [],
         customSections: [],
+        fieldOverrides: {},
       },
       "Autonomous",
       DEFAULTS,
@@ -339,6 +353,7 @@ describe("removeSectionFromCustomization", () => {
           custom({ id: "custom_b", section: CUSTOM_SECTION_TITLE }),
         ],
         customSections: ["Defense", "Strategy"],
+        fieldOverrides: {},
       },
       "Defense",
       DEFAULTS,
@@ -354,6 +369,7 @@ describe("removeSectionFromCustomization", () => {
         removedFieldIds: ["autoScoredLow"],
         customFields: [],
         customSections: [],
+        fieldOverrides: {},
       },
       "Autonomous",
       DEFAULTS,
@@ -366,5 +382,231 @@ describe("removeSectionFromCustomization", () => {
     expect(removeSectionFromCustomization(before, "Nope", DEFAULTS)).toEqual(
       before,
     );
+  });
+});
+
+/** A customization carrying nothing but the overrides under test. */
+function withOverrides(
+  fieldOverrides: Record<string, { label?: string; options?: string[]; required?: boolean }>,
+) {
+  return { ...emptyCustomization(), fieldOverrides };
+}
+
+describe("applyCustomization — edits to default questions", () => {
+  it("renames a question without touching its id", () => {
+    const result = applyCustomization(
+      DEFAULTS,
+      withOverrides({ autoMobility: { label: "Crossed the line?" } }),
+    );
+    expect(result[0].fields[0]).toEqual({
+      kind: "select",
+      id: "autoMobility",
+      label: "Crossed the line?",
+      options: ["Yes", "No"],
+      required: undefined,
+    });
+  });
+
+  it("replaces a dropdown's choices", () => {
+    const result = applyCustomization(
+      DEFAULTS,
+      withOverrides({ endgame: { options: ["None", "Park", "Deep climb"] } }),
+    );
+    const endgame = result[1].fields[0];
+    expect(endgame).toMatchObject({
+      label: "Endgame",
+      options: ["None", "Park", "Deep climb"],
+    });
+  });
+
+  it("makes a question required, and lets it be made optional again", () => {
+    const required = applyCustomization(
+      DEFAULTS,
+      withOverrides({ autoMobility: { required: true } }),
+    );
+    expect(required[0].fields[0]).toMatchObject({ required: true });
+
+    const withDefaultRequired: readonly FormSection[] = [
+      {
+        title: "Autonomous",
+        fields: [
+          { kind: "text", id: "notes", label: "Notes", required: true },
+        ],
+      },
+    ];
+    // `required: false` has to beat a season default of true — the bug an
+    // `||` here would hide.
+    const optional = applyCustomization(
+      withDefaultRequired,
+      withOverrides({ notes: { required: false } }),
+    );
+    expect(optional[0].fields[0]).toMatchObject({ required: false });
+  });
+
+  it("ignores parts of an override the field's kind doesn't have", () => {
+    // A counter has neither options nor required in FieldDef.
+    const result = applyCustomization(
+      DEFAULTS,
+      withOverrides({
+        autoScoredLow: { label: "Low goal", options: ["a"], required: true },
+      }),
+    );
+    expect(result[0].fields[1]).toEqual({
+      kind: "counter",
+      id: "autoScoredLow",
+      label: "Low goal",
+    });
+  });
+
+  it("leaves an override for a field that isn't on this form alone", () => {
+    expect(
+      applyCustomization(DEFAULTS, withOverrides({ notAField: { label: "X" } })),
+    ).toEqual(DEFAULTS);
+  });
+
+  it("edits and strikes are independent — a struck field stays struck", () => {
+    const result = applyCustomization(DEFAULTS, {
+      ...emptyCustomization(),
+      hiddenFieldIds: ["autoMobility"],
+      fieldOverrides: { autoMobility: { label: "Renamed" } },
+    });
+    expect(result[0].fields.map((f) => f.id)).toEqual(["autoScoredLow"]);
+  });
+
+  it("a renamed question still carries a required answer under its own id", () => {
+    const sections = applyCustomization(
+      DEFAULTS,
+      withOverrides({ autoMobility: { label: "Crossed the line?", required: true } }),
+    );
+    expect(missingRequiredFields(sections, emptyValues(sections))).toEqual([
+      "Crossed the line?",
+    ]);
+  });
+});
+
+describe("setFieldOverride", () => {
+  it("stores only the parts that carry a value", () => {
+    const result = setFieldOverride(emptyCustomization(), "endgame", {
+      label: "  Climb  ",
+      options: [],
+      required: undefined,
+    });
+    // Trimmed, and the empty options list is not stored at all — Firestore
+    // rejects undefined, and an empty choice list is not an edit.
+    expect(result.fieldOverrides).toEqual({ endgame: { label: "Climb" } });
+  });
+
+  it("drops the key entirely when an edit changes nothing", () => {
+    const edited = setFieldOverride(emptyCustomization(), "endgame", {
+      label: "Climb",
+    });
+    const cleared = setFieldOverride(edited, "endgame", {
+      label: "",
+      options: [],
+    });
+    expect(cleared.fieldOverrides).toEqual({});
+  });
+
+  it("leaves other fields' overrides alone", () => {
+    const first = setFieldOverride(emptyCustomization(), "a", { label: "A" });
+    const second = setFieldOverride(first, "b", { label: "B" });
+    expect(second.fieldOverrides).toEqual({ a: { label: "A" }, b: { label: "B" } });
+    // Pure: the input is not mutated.
+    expect(first.fieldOverrides).toEqual({ a: { label: "A" } });
+  });
+
+  it("never writes an undefined value, which Firestore rejects", () => {
+    const result = setFieldOverride(emptyCustomization(), "endgame", {
+      label: "Climb",
+      options: undefined,
+      required: undefined,
+    });
+    expect(
+      Object.values(result.fieldOverrides.endgame).some((v) => v === undefined),
+    ).toBe(false);
+  });
+});
+
+describe("updateCustomField", () => {
+  it("rewrites a team question in place, keeping its id", () => {
+    const start = {
+      ...emptyCustomization(),
+      customFields: [custom({ id: "custom_q", label: "Old", kind: "text" as const })],
+    };
+    const result = updateCustomField(start, "custom_q", {
+      kind: "select",
+      label: "New",
+      section: "Endgame",
+      options: ["Yes", "No"],
+      required: true,
+    });
+    expect(result.customFields).toEqual([
+      {
+        id: "custom_q",
+        kind: "select",
+        label: "New",
+        section: "Endgame",
+        options: ["Yes", "No"],
+        required: true,
+      },
+    ]);
+  });
+
+  it("ignores an id that isn't a team question", () => {
+    const start = {
+      ...emptyCustomization(),
+      customFields: [custom({ id: "custom_q" })],
+    };
+    expect(
+      updateCustomField(start, "custom_other", {
+        kind: "text",
+        label: "X",
+        section: "Endgame",
+      }).customFields,
+    ).toEqual(start.customFields);
+  });
+});
+
+describe("sanitizeScoutFormsConfig — field overrides", () => {
+  it("keeps a well-formed override", () => {
+    const config = sanitizeScoutFormsConfig({
+      pitScout: {
+        fieldOverrides: {
+          drivetrain: { label: "Drive type", options: ["Tank", "Swerve"], required: true },
+        },
+      },
+    });
+    expect(config.pitScout.fieldOverrides).toEqual({
+      drivetrain: { label: "Drive type", options: ["Tank", "Swerve"], required: true },
+    });
+  });
+
+  it("drops junk without dropping the rest of the config", () => {
+    const config = sanitizeScoutFormsConfig({
+      pitScout: {
+        fieldOverrides: {
+          ok: { label: "Fine" },
+          blankLabel: { label: "   " },
+          emptyOptions: { options: [] },
+          wrongTypes: { label: 7, options: "nope", required: "yes" },
+          notAnObject: "nope",
+          nothingLeft: {},
+        },
+      },
+    });
+    expect(config.pitScout.fieldOverrides).toEqual({ ok: { label: "Fine" } });
+  });
+
+  it("defaults to no overrides on a config saved before editing shipped", () => {
+    const config = sanitizeScoutFormsConfig({ pitScout: { hiddenFieldIds: ["a"] } });
+    expect(config.pitScout.fieldOverrides).toEqual({});
+    expect(config.matchScout.fieldOverrides).toEqual({});
+  });
+
+  it("keeps required:false, which means 'no longer required'", () => {
+    const config = sanitizeScoutFormsConfig({
+      matchScout: { fieldOverrides: { notes: { required: false } } },
+    });
+    expect(config.matchScout.fieldOverrides).toEqual({ notes: { required: false } });
   });
 });

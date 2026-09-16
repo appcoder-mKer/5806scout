@@ -81,6 +81,18 @@ export const PREDICTION_FIELD_IDS: readonly string[] = [
 ];
 
 /**
+ * The option strings the predictor scores for one select field, in the order
+ * SELECT_MODE_POINTS lists them. Empty for a field it doesn't score.
+ *
+ * Form Setup lets an admin rewrite a default question's choices, and these are
+ * matched by their exact text — rename "Level 2" and a scout picking it scores
+ * nothing. The editor warns with this list rather than silently going quiet.
+ */
+export function scoredOptionsFor(fieldId: string): string[] {
+  return Object.keys(SELECT_MODE_POINTS[fieldId] ?? {});
+}
+
+/**
  * Which predictor inputs this team's effective Match Scout form no longer
  * collects. Empty means predictions are running on complete data.
  */

@@ -13,6 +13,7 @@ import {
   type ScoutStatus,
 } from "@/lib/dashboard";
 import type { EventData, EventMatch } from "@/lib/eventData";
+import { liveEventKey } from "@/lib/manualEvent";
 import { db } from "@/lib/firebase/client";
 import {
   DUTY_LABELS,
@@ -385,8 +386,8 @@ function CrewStatus({
 
   // Poll TBA for which matches have actually been played — the synced event
   // doc's scores go stale the moment the event moves on.
+  const eventKey = liveEventKey(event);
   useEffect(() => {
-    const eventKey = event?.eventKey;
     if (!eventKey) return;
     let cancelled = false;
 
@@ -406,7 +407,7 @@ function CrewStatus({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [event?.eventKey]);
+  }, [eventKey]);
 
   // The stalled clock has to advance on its own — nothing else re-renders
   // this when a scout simply stops submitting.

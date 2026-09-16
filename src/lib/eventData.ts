@@ -48,6 +48,12 @@ export interface EventData {
   matches: EventMatch[];
   /** Missing on docs synced before venue support shipped. */
   venue?: EventVenue | null;
+  /**
+   * For a manually created event only: the season the EPA column was measured
+   * over. A manual event has no Statbotics page, so its EPA is each team's
+   * season number rather than this event's — and the Event tab says so.
+   */
+  epaYear?: number;
   syncedAt: number; // unix ms, set client-side on save
 }
 

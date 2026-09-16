@@ -8,6 +8,12 @@ import {
   type EventRankingRow,
   type EventSearchResult,
 } from "@/lib/eventData";
+import {
+  formatTeamNumbers,
+  isManualEvent,
+  MAX_MANUAL_TEAMS,
+  parseTeamNumbers,
+} from "@/lib/manualEvent";
 import { ReliabilityWarning } from "@/components/ReliabilityFlags";
 import { NexusPitMap } from "@/components/NexusPitMap";
 import { pitAddressFor, type NexusPitAddresses, type PitMap } from "@/lib/nexus";
@@ -59,7 +65,19 @@ const VIEW_LABELS: Record<View, string> = {
 type SyncStatus =
   | { state: "idle" }
   | { state: "syncing" }
+  // A save that worked but has something to say — a typo'd team number, a
+  // stale EPA. Separate from "error" so a finished save never reads as a
+  // failed one.
+  | { state: "notice"; message: string }
   | { state: "error"; message: string };
+
+/**
+ * Ceiling on a manual save. Enriching a long list is two upstream calls per
+ * team; without a deadline the button sits on "Looking teams up…" until the
+ * platform gateway cuts the connection, and the admin is told they might be
+ * offline when they are not.
+ */
+const MANUAL_SAVE_TIMEOUT_MS = 290_000;
 
 const inputClass = "field-input stat w-44";
 
@@ -69,6 +87,7 @@ export default function EventPage() {
   const [event, setEvent] = useState<EventData | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState<SyncStatus>({ state: "idle" });
+  const [editingManual, setEditingManual] = useState(false);
 
   useEffect(() => {
     // The synced event lives in the shared store — one event per sister pair.
@@ -125,7 +144,7 @@ export default function EventPage() {
       setStatus(
         epaAvailable === false
           ? {
-              state: "error",
+              state: "notice",
               message:
                 "Synced teams and schedule, but Statbotics is unavailable — EPA may be stale.",
             }
@@ -136,7 +155,92 @@ export default function EventPage() {
     }
   }
 
+  /**
+   * Build (or rebuild) an event from a hand-entered team list. Same shape and
+   * same destination as a sync — the only differences are where the teams came
+   * from and that EPA is the team's season number, since Statbotics has no
+   * rows for an event it has never heard of.
+   */
+  async function handleManualSave(
+    eventName: string,
+    teamNumbers: readonly number[],
+    eventKey?: string,
+  ) {
+    if (!dataTeamId) return;
+    setStatus({ state: "syncing" });
+    try {
+      const res = await fetch("/api/manual-event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventName, teamNumbers, eventKey }),
+        signal: AbortSignal.timeout(MANUAL_SAVE_TIMEOUT_MS),
+      });
+      const body = (await res.json()) as EventData & {
+        epaAvailable?: boolean;
+        oprAvailable?: boolean;
+        unknownTeams?: number[];
+        error?: string;
+      };
+      if (!res.ok) {
+        setStatus({
+          state: "error",
+          message: body.error ?? `Couldn't build that event (${res.status}).`,
+        });
+        return;
+      }
+
+      const {
+        epaAvailable,
+        oprAvailable: _oprAvailable,
+        unknownTeams,
+        error: _error,
+        ...data
+      } = body;
+      // Re-enriching the same manual event with Statbotics down would blank
+      // every EPA it already had — the same guard a re-sync gets.
+      const teams =
+        epaAvailable === false && event?.eventKey === data.eventKey
+          ? preserveEpa(data.teams, event.teams)
+          : data.teams;
+
+      await setDoc(doc(db, "teams", dataTeamId, "config", "event"), {
+        ...data,
+        teams,
+        syncedAt: Date.now(),
+      });
+
+      const notes = [
+        epaAvailable === false
+          ? "Statbotics is unavailable, so EPA is blank or stale."
+          : null,
+        unknownTeams && unknownTeams.length > 0
+          ? `The Blue Alliance has no team ${unknownTeams.join(", ")} — check for a typo.`
+          : null,
+      ].filter(Boolean);
+      setStatus(
+        notes.length > 0
+          ? {
+              state: "notice",
+              message: `Saved ${data.teams.length} teams. ${notes.join(" ")}`,
+            }
+          : { state: "idle" },
+      );
+    } catch (err) {
+      setStatus({
+        state: "error",
+        message:
+          err instanceof DOMException && err.name === "TimeoutError"
+            ? "That took too long to look up. Try again, or split the list into two shorter ones."
+            : "Save failed — are you online?",
+      });
+    }
+  }
+
   const isAdmin = profile?.role === "admin";
+  const manual = isManualEvent(event);
+  // A manual event has no schedule, no rankings and no pit map to show: every
+  // one of those is TBA's or Nexus's answer about an event they know.
+  const activeView: View = manual ? "teams" : view;
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 md:px-6">
@@ -148,13 +252,13 @@ export default function EventPage() {
           </h1>
           <p className="page-lede">
             {event
-              ? `${event.eventName} · ${event.teams.length} teams · synced ${new Date(event.syncedAt).toLocaleString()}`
+              ? `${event.eventName} · ${event.teams.length} teams · ${manual ? "entered by hand" : "synced"} ${new Date(event.syncedAt).toLocaleString()}`
               : "Team list, match schedule, and EPA stats from TBA + Statbotics."}
           </p>
         </div>
 
         {isAdmin && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <EventSearchBox
               syncing={status.state === "syncing"}
               onSync={(key) => void handleSync(key)}
@@ -163,20 +267,57 @@ export default function EventPage() {
               <button
                 type="button"
                 disabled={status.state === "syncing"}
-                onClick={() => void handleSync(event.eventKey)}
+                onClick={() =>
+                  void (manual
+                    ? handleManualSave(
+                        event.eventName,
+                        event.teams.map((t) => t.teamNumber),
+                        event.eventKey,
+                      )
+                    : handleSync(event.eventKey))
+                }
                 className="btn-secondary px-3 py-2"
+                title={
+                  manual
+                    ? "Look the team list up again for fresh names and EPA"
+                    : "Sync this event from TBA again"
+                }
               >
                 Refresh
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => setEditingManual((open) => !open)}
+              aria-expanded={editingManual}
+              className="btn-secondary px-3 py-2"
+            >
+              {manual ? "Edit team list" : "Enter teams by hand"}
+            </button>
           </div>
         )}
       </div>
 
-      {status.state === "error" && (
-        <p className="badge-error rounded-md px-3 py-2 text-sm normal-case tracking-normal">
+      {(status.state === "error" || status.state === "notice") && (
+        <p
+          className={`${
+            status.state === "notice" ? "badge-warning" : "badge-error"
+          } rounded-md px-3 py-2 text-sm normal-case tracking-normal`}
+        >
           {status.message}
         </p>
+      )}
+
+      {isAdmin && editingManual && (
+        <ManualEventEditor
+          event={manual ? event : null}
+          busy={status.state === "syncing"}
+          onCancel={() => setEditingManual(false)}
+          onSave={(name, teams, key) => {
+            setEditingManual(false);
+            void handleManualSave(name, teams, key);
+          }}
+        />
       )}
 
       {loaded && !event && (
@@ -190,31 +331,34 @@ export default function EventPage() {
 
       {event && (
         <>
-          <div className="surface-card flex w-fit p-0.5">
-            {(["teams", "schedule", "ranking", "map"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => setView(v)}
-                className={`rounded px-3.5 py-1.5 text-sm font-medium transition ${
-                  view === v
-                    ? "bg-maroon-600 text-white"
-                    : "text-graphite-600 hover:text-graphite-900"
-                }`}
-              >
-                {VIEW_LABELS[v]}
-              </button>
-            ))}
-          </div>
+          {/* One view means no view switcher — a manual event has only teams. */}
+          {!manual && (
+            <div className="surface-card flex w-fit p-0.5">
+              {(["teams", "schedule", "ranking", "map"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setView(v)}
+                  className={`rounded px-3.5 py-1.5 text-sm font-medium transition ${
+                    view === v
+                      ? "bg-maroon-600 text-white"
+                      : "text-graphite-600 hover:text-graphite-900"
+                  }`}
+                >
+                  {VIEW_LABELS[v]}
+                </button>
+              ))}
+            </div>
+          )}
 
-          {view === "teams" && <TeamsTable event={event} />}
-          {view === "schedule" && (
+          {activeView === "teams" && <TeamsTable event={event} manual={manual} />}
+          {activeView === "schedule" && (
             <ScheduleTable event={event} myTeam={profile?.teamId ?? ""} />
           )}
-          {view === "ranking" && (
+          {activeView === "ranking" && (
             <RankingTable eventKey={event.eventKey} myTeam={profile?.teamId ?? ""} />
           )}
-          {view === "map" && (
+          {activeView === "map" && (
             <MapView
               event={event}
               teamId={dataTeamId ?? ""}
@@ -408,7 +552,13 @@ function EventSearchBox({
   );
 }
 
-function TeamsTable({ event }: { event: EventData }) {
+function TeamsTable({
+  event,
+  manual = false,
+}: {
+  event: EventData;
+  manual?: boolean;
+}) {
   return (
     <div className="surface-card overflow-x-auto">
       <table className="data-table">
@@ -417,8 +567,21 @@ function TeamsTable({ event }: { event: EventData }) {
             <th className="px-3 py-2.5">Team</th>
             <th className="px-3 py-2.5">Name</th>
             <th className="px-3 py-2.5">City</th>
-            <th className="px-3 py-2.5">EPA</th>
-            <th className="px-3 py-2.5">OPR</th>
+            {/* A manual event has no Statbotics event page, so this is the
+                team's season EPA — a different number, named differently. */}
+            <th
+              className="px-3 py-2.5"
+              title={
+                manual
+                  ? "Season EPA from Statbotics — this event has no page of its own"
+                  : "Expected points added at this event"
+              }
+            >
+              {manual ? "Season EPA" : "EPA"}
+            </th>
+            {/* OPR is computed from an event's own played matches, so a manual
+                event can never have one — an always-empty column is noise. */}
+            {!manual && <th className="px-3 py-2.5">OPR</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-graphite-100">
@@ -437,14 +600,178 @@ function TeamsTable({ event }: { event: EventData }) {
               <td className="stat px-3 py-2">
                 {t.epa !== null ? t.epa.toFixed(1) : "—"}
               </td>
-              <td className="stat px-3 py-2">
-                {t.opr != null ? t.opr.toFixed(1) : "—"}
-              </td>
+              {!manual && (
+                <td className="stat px-3 py-2">
+                  {t.opr != null ? t.opr.toFixed(1) : "—"}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * Name an event and paste its team list. For an off-season event TBA has no
+ * team list for, this is the only way to get teams into the app — and once
+ * they're in, assignments, the picklist and the Teams tab work exactly as
+ * they do for a synced event.
+ *
+ * Editing an existing manual event opens pre-filled with its current list, so
+ * adding a team that turned up late is "type a number on the end and save"
+ * rather than a separate add-a-team flow.
+ */
+function ManualEventEditor({
+  event,
+  busy,
+  onCancel,
+  onSave,
+}: {
+  event: EventData | null;
+  busy: boolean;
+  onCancel: () => void;
+  onSave: (name: string, teamNumbers: number[], eventKey?: string) => void;
+}) {
+  const [name, setName] = useState(event?.eventName ?? "");
+  const [text, setText] = useState(() =>
+    event ? formatTeamNumbers(event.teams.map((t) => t.teamNumber)) : "",
+  );
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  const parsed = parseTeamNumbers(text);
+  const tooMany = parsed.teamNumbers.length > MAX_MANUAL_TEAMS;
+  const canSave =
+    !busy && name.trim() !== "" && parsed.teamNumbers.length > 0 && !tooMany;
+
+  async function handleFile(file: File | undefined) {
+    if (!file) return;
+    setFileError(null);
+    try {
+      const contents = await file.text();
+      // Appended, not replaced: a second file is a second block of teams, and
+      // silently discarding what's already typed would be worse than either.
+      setText((prev) => (prev.trim() === "" ? contents : `${prev}\n${contents}`));
+    } catch {
+      setFileError("Could not read that file — try pasting the list instead.");
+    }
+  }
+
+  return (
+    <form
+      className="surface-card flex flex-col gap-3 p-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (canSave) onSave(name.trim(), parsed.teamNumbers, event?.eventKey);
+      }}
+    >
+      <div>
+        <p className="text-sm font-medium text-graphite-900">
+          {event ? "Edit the team list" : "Enter an event by hand"}
+        </p>
+        <p className="mt-1 text-xs text-graphite-500">
+          For an off-season event with no team list on The Blue Alliance. Paste
+          the numbers and each team&apos;s name, city and season EPA are looked
+          up one by one. There&apos;s no match schedule, so match assignments
+          stay unavailable — pit assignments and the picklist work as usual.
+        </p>
+      </div>
+
+      <label className="flex flex-col gap-1.5">
+        <span className="text-sm font-medium text-graphite-700">Event name</span>
+        <input
+          type="text"
+          value={name}
+          maxLength={80}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Ramp Riot 2026"
+          className="field-input"
+        />
+      </label>
+
+      <label className="flex flex-col gap-1.5">
+        <span className="text-sm font-medium text-graphite-700">
+          Team numbers
+        </span>
+        <textarea
+          rows={4}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="5806, 1257, 25, 303…"
+          className="field-input stat"
+        />
+      </label>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <label className="btn-secondary cursor-pointer px-3 py-2">
+          <span>Upload a list</span>
+          <input
+            type="file"
+            accept=".csv,.tsv,.txt,text/plain,text/csv"
+            className="sr-only"
+            onChange={(e) => {
+              void handleFile(e.target.files?.[0]);
+              // Clear the picker so choosing the same file twice still fires.
+              e.target.value = "";
+            }}
+          />
+        </label>
+        <p className="text-xs text-graphite-500">
+          <span className="stat">{parsed.teamNumbers.length}</span> team
+          {parsed.teamNumbers.length === 1 ? "" : "s"}
+          {parsed.duplicates > 0 && (
+            <>
+              {" · "}
+              <span className="stat">{parsed.duplicates}</span> repeat
+              {parsed.duplicates === 1 ? "" : "s"} ignored
+            </>
+          )}
+        </p>
+      </div>
+
+      {parsed.invalid.length > 0 && (
+        <p className="badge-warning rounded-md px-3 py-2 text-xs normal-case tracking-normal">
+          Not a team number, so skipped: {parsed.invalid.slice(0, 8).join(", ")}
+          {parsed.invalid.length > 8
+            ? ` and ${parsed.invalid.length - 8} more`
+            : ""}
+        </p>
+      )}
+      {tooMany && (
+        <p className="badge-error rounded-md px-3 py-2 text-xs normal-case tracking-normal">
+          That&apos;s more than {MAX_MANUAL_TEAMS} teams — check the list.
+        </p>
+      )}
+      {fileError && (
+        <p className="badge-error rounded-md px-3 py-2 text-xs normal-case tracking-normal">
+          {fileError}
+        </p>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <button type="submit" disabled={!canSave} className="btn-primary px-4 py-2">
+          {busy
+            ? "Looking teams up…"
+            : event
+              ? "Save team list"
+              : "Create event"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="btn-secondary px-4 py-2"
+        >
+          Cancel
+        </button>
+      </div>
+      {!event && (
+        <p className="text-xs text-graphite-500">
+          This replaces whatever event is synced now. Your scouting data stays
+          put — only the team list and schedule change.
+        </p>
+      )}
+    </form>
   );
 }
 

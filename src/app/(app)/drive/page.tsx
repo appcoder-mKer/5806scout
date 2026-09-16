@@ -775,6 +775,14 @@ function TeamDrawer({
   const pitValues = { ...(pit?.values ?? {}), ...media };
   const hasPit = Object.keys(pitValues).length > 0;
 
+  // Labels off the effective schema, not the season constant: a question the
+  // team renamed in Form Setup has to read the same here as on the form.
+  const fieldLabels = new Map(
+    matchSections.flatMap((s) => s.fields.map((f) => [f.id, f.label] as const)),
+  );
+  const labelFor = (fieldId: string) =>
+    fieldLabels.get(fieldId) ?? MATCH_FIELD_LABELS[fieldId] ?? fieldId;
+
   return (
     <div className="mt-1.5 flex flex-col gap-3 rounded-md border border-graphite-200 bg-graphite-50 p-3 dark:bg-graphite-900/40">
       <section className="flex flex-col gap-2">
@@ -793,7 +801,7 @@ function TeamDrawer({
                 className="flex items-baseline justify-between gap-3"
               >
                 <dt className="text-xs text-graphite-500">
-                  {MATCH_FIELD_LABELS[entry.id] ?? entry.id}
+                  {labelFor(entry.id)}
                 </dt>
                 <dd className="stat text-sm font-semibold text-graphite-900">
                   {entry.avg.toFixed(1)}
@@ -809,7 +817,7 @@ function TeamDrawer({
                 className="flex items-baseline justify-between gap-3"
               >
                 <dt className="text-xs text-graphite-500">
-                  {MATCH_FIELD_LABELS[entry.id] ?? entry.id}
+                  {labelFor(entry.id)}
                 </dt>
                 <dd className="text-sm text-graphite-900">{entry.mode}</dd>
               </div>

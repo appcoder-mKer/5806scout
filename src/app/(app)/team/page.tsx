@@ -677,7 +677,7 @@ export default function TeamPage() {
                 team&apos;s admin generates a code; the other enters it here.
               </p>
               {linkCode ? (
-                <p className="surface-panel rounded-md px-3 py-2 text-sm text-graphite-700">
+                <p className="surface-panel break-words rounded-md px-3 py-2 text-sm text-graphite-700">
                   Share this code with their admin (valid for 24 hours):{" "}
                   <span className="stat text-lg font-bold tracking-widest text-graphite-900">
                     {linkCode}
@@ -693,13 +693,16 @@ export default function TeamPage() {
                   Generate link code
                 </button>
               )}
-              <form onSubmit={handleRedeem} className="flex items-center gap-2">
+              <form
+                onSubmit={handleRedeem}
+                className="flex flex-wrap items-center gap-2"
+              >
                 <input
                   type="text"
                   placeholder="Code from your sister team"
                   value={codeInput}
                   onChange={(e) => setCodeInput(e.target.value)}
-                  className="field-input stat w-56 uppercase tracking-widest"
+                  className="field-input stat w-full uppercase tracking-widest sm:w-56"
                 />
                 <button
                   type="submit"
@@ -821,20 +824,22 @@ export default function TeamPage() {
                   <p className="text-sm font-medium text-graphite-900">
                     {member.fullName}
                   </p>
-                  <p className="text-xs text-graphite-500">{member.email}</p>
+                  <p className="break-all text-xs text-graphite-500">
+                    {member.email}
+                  </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => void decideMember(member, "approved")}
-                    className="btn-primary px-3 py-1.5 text-sm"
+                    className="btn-primary min-h-11 px-3 py-1.5 text-sm sm:min-h-0"
                   >
                     Approve
                   </button>
                   <button
                     type="button"
                     onClick={() => void decideMember(member, "denied")}
-                    className="btn-secondary px-3 py-1.5 text-sm"
+                    className="btn-secondary min-h-11 px-3 py-1.5 text-sm sm:min-h-0"
                   >
                     Decline
                   </button>
@@ -845,13 +850,16 @@ export default function TeamPage() {
         </div>
       )}
 
+      {/* A roster row carries a name, up to three badges, a duty picker and
+          up to three buttons. That is never one line on a phone, so the row
+          stacks below sm: and every control group wraps. */}
       <ul className="surface-card divide-y divide-graphite-100">
         {approvedRoster.map((member) => (
           <li
             key={member.uid}
-            className="flex items-center justify-between gap-3 px-4 py-3 transition hover:bg-graphite-50"
+            className="flex flex-col gap-2 px-4 py-3 transition hover:bg-graphite-50 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
           >
-            <div className={member.active ? "" : "opacity-50"}>
+            <div className={`min-w-0 ${member.active ? "" : "opacity-50"}`}>
               <p className="text-sm font-medium text-graphite-900">
                 {member.fullName}
                 {member.uid === user?.uid && (
@@ -862,10 +870,14 @@ export default function TeamPage() {
                   an admin sees the column, and a scout sees nothing but
                   their own address. */}
               {(isAdmin || member.uid === user?.uid) && (
-                <p className="text-xs text-graphite-500">{member.email}</p>
+                // An email is one unbreakable word — without break-all a long
+                // address pushes the whole page sideways on a phone.
+                <p className="break-all text-xs text-graphite-500">
+                  {member.email}
+                </p>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
               {member.teamId !== profile?.teamId && (
                 <span className="rounded bg-sky-50 px-1.5 py-0.5 text-xs font-semibold text-sky-700 dark:text-sky-300">
                   {team?.sisterTeamNumber ?? member.teamId}
@@ -895,7 +907,7 @@ export default function TeamPage() {
                   onChange={(e) =>
                     setDuty(member.uid, e.target.value as ScoutDuty)
                   }
-                  className="field-input w-auto py-1 text-xs"
+                  className="field-input w-auto min-h-11 py-1 text-xs sm:min-h-0"
                 >
                   {SCOUT_DUTIES.map((duty) => (
                     <option key={duty} value={duty}>
@@ -923,7 +935,7 @@ export default function TeamPage() {
                       ? LAST_ADMIN_MESSAGE
                       : "Permanently delete your own account"
                   }
-                  className="btn-ghost border border-maroon-200 px-2.5 py-1 text-maroon-700 dark:border-maroon-700 dark:text-maroon-300 disabled:opacity-40"
+                  className="btn-ghost min-h-11 border border-maroon-200 px-2.5 py-1 text-maroon-700 dark:border-maroon-700 dark:text-maroon-300 disabled:opacity-40 sm:min-h-0"
                 >
                   {deletingUid === member.uid ? "Deleting…" : "Delete my account"}
                 </button>
@@ -933,14 +945,14 @@ export default function TeamPage() {
                   <button
                     type="button"
                     onClick={() => void toggleRole(member)}
-                    className="btn-ghost border border-graphite-200 px-2.5 py-1"
+                    className="btn-ghost min-h-11 border border-graphite-200 px-2.5 py-1 sm:min-h-0"
                   >
                     {member.role === "admin" ? "Make scout" : "Make admin"}
                   </button>
                   <button
                     type="button"
                     onClick={() => void toggleActive(member)}
-                    className="btn-ghost border border-graphite-200 px-2.5 py-1"
+                    className="btn-ghost min-h-11 border border-graphite-200 px-2.5 py-1 sm:min-h-0"
                   >
                     {member.active ? "Deactivate" : "Reactivate"}
                   </button>
@@ -949,7 +961,7 @@ export default function TeamPage() {
                     onClick={() => void deleteMember(member)}
                     disabled={deletingUid === member.uid}
                     title={`Permanently delete ${member.fullName}`}
-                    className="btn-ghost border border-maroon-200 px-2.5 py-1 text-maroon-700 dark:border-maroon-700 dark:text-maroon-300 disabled:opacity-40"
+                    className="btn-ghost min-h-11 border border-maroon-200 px-2.5 py-1 text-maroon-700 dark:border-maroon-700 dark:text-maroon-300 disabled:opacity-40 sm:min-h-0"
                   >
                     {deletingUid === member.uid ? "Deleting…" : "Delete"}
                   </button>

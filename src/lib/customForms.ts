@@ -48,6 +48,22 @@ export interface CustomField {
   required?: boolean;
 }
 
+/**
+ * An edit to a default-schema question, keyed by its field id. Only the parts
+ * a team can safely change: the wording, the choices, and whether an answer is
+ * required. The field's *kind* is deliberately not here — Match Scout is a
+ * bespoke screen whose one-tap controls are built per kind, so turning a
+ * counter into a textarea would render a control that screen doesn't have.
+ *
+ * The id never changes, which is the whole point: renaming a question leaves
+ * every answer already collected under it attached to it.
+ */
+export interface FieldOverride {
+  label?: string;
+  options?: string[];
+  required?: boolean;
+}
+
 export interface FormCustomization {
   /** Ids of default-schema fields this team has toggled off. */
   hiddenFieldIds: string[];
@@ -61,6 +77,11 @@ export interface FormCustomization {
    * at least one question.
    */
   customSections: string[];
+  /**
+   * Edits to default-schema questions, by field id. Absent on configs saved
+   * before editing shipped, hence every reader goes through the sanitizer.
+   */
+  fieldOverrides: Record<string, FieldOverride>;
 }
 
 export interface ScoutFormsConfig {
@@ -74,6 +95,7 @@ export function emptyCustomization(): FormCustomization {
     removedFieldIds: [],
     customFields: [],
     customSections: [],
+    fieldOverrides: {},
   };
 }
 
@@ -109,6 +131,44 @@ function sanitizeCustomField(value: unknown): CustomField | null {
   };
 }
 
+/**
+ * One override, with every empty part dropped. An override with nothing left
+ * in it returns null so the caller can delete the key rather than store an
+ * empty object that means "no change" in a more expensive way.
+ */
+function sanitizeFieldOverride(value: unknown): FieldOverride | null {
+  if (!isRecord(value)) return null;
+  const override: FieldOverride = {};
+
+  if (typeof value.label === "string" && value.label.trim() !== "") {
+    override.label = value.label;
+  }
+  if (Array.isArray(value.options)) {
+    const options = value.options.filter(
+      (option): option is string => typeof option === "string" && option.trim() !== "",
+    );
+    // An empty list would blank a dropdown's choices and leave a question
+    // nobody can answer — treat it as "no override", not as "no options".
+    if (options.length > 0) override.options = options;
+  }
+  if (typeof value.required === "boolean") {
+    override.required = value.required;
+  }
+
+  return Object.keys(override).length > 0 ? override : null;
+}
+
+function sanitizeFieldOverrides(value: unknown): Record<string, FieldOverride> {
+  if (!isRecord(value)) return {};
+  const overrides: Record<string, FieldOverride> = {};
+  for (const [fieldId, raw] of Object.entries(value)) {
+    if (fieldId.trim() === "") continue;
+    const override = sanitizeFieldOverride(raw);
+    if (override) overrides[fieldId] = override;
+  }
+  return overrides;
+}
+
 function sanitizeCustomization(value: unknown): FormCustomization {
   if (!isRecord(value)) return emptyCustomization();
   const hiddenFieldIds = Array.isArray(value.hiddenFieldIds)
@@ -135,7 +195,13 @@ function sanitizeCustomization(value: unknown): FormCustomization {
         ),
       ]
     : [];
-  return { hiddenFieldIds, removedFieldIds, customFields, customSections };
+  return {
+    hiddenFieldIds,
+    removedFieldIds,
+    customFields,
+    customSections,
+    fieldOverrides: sanitizeFieldOverrides(value.fieldOverrides),
+  };
 }
 
 /**
@@ -209,9 +275,47 @@ function customFieldToFieldDef(field: CustomField): FieldDef {
 }
 
 /**
- * The team's effective form: default sections minus hidden fields, plus
- * custom questions appended to their target section (or a trailing section
- * when the target doesn't exist). Sections left with no fields disappear.
+ * Apply one team's edit to a default question. Which parts land depends on the
+ * kind — `multiselect` and `counter` have no `required` in FieldDef, and only
+ * the two choice kinds have options — so an override carrying a part the kind
+ * doesn't have is ignored rather than widening the field's own type.
+ */
+export function applyFieldOverride(
+  field: FieldDef,
+  override: FieldOverride | undefined,
+): FieldDef {
+  if (!override) return field;
+  const label =
+    override.label !== undefined && override.label.trim() !== ""
+      ? override.label
+      : field.label;
+  const options =
+    override.options && override.options.length > 0 ? override.options : null;
+
+  switch (field.kind) {
+    case "select":
+      return {
+        ...field,
+        label,
+        options: options ?? field.options,
+        // `??` and not `||`: unchecking Required stores `false`, which has to
+        // win over a season default of `true`.
+        required: override.required ?? field.required,
+      };
+    case "multiselect":
+      return { ...field, label, options: options ?? field.options };
+    case "counter":
+      return { ...field, label };
+    default:
+      return { ...field, label, required: override.required ?? field.required };
+  }
+}
+
+/**
+ * The team's effective form: default sections minus hidden fields and with
+ * their edits applied, plus custom questions appended to their target section
+ * (or a trailing section when the target doesn't exist). Sections left with no
+ * fields disappear.
  */
 export function applyCustomization(
   defaults: readonly FormSection[],
@@ -225,11 +329,14 @@ export function applyCustomization(
     ...customization.hiddenFieldIds,
     ...customization.removedFieldIds,
   ]);
+  const overrides = customization.fieldOverrides ?? {};
   const sections: { title: string; description?: string; fields: FieldDef[] }[] =
     defaults.map((section) => ({
       title: section.title,
       ...(section.description ? { description: section.description } : {}),
-      fields: section.fields.filter((field) => !hidden.has(field.id)),
+      fields: section.fields
+        .filter((field) => !hidden.has(field.id))
+        .map((field) => applyFieldOverride(field, overrides[field.id])),
     }));
 
   // Team-added sections render after the defaults, in the order the admin
@@ -297,6 +404,8 @@ export function removeSectionFromCustomization(
       .find((section) => section.title === title)
       ?.fields.map((field) => field.id) ?? [];
   const alreadyRemoved = new Set(customization.removedFieldIds);
+  // A removed question keeps its override: restoring it from the drawer should
+  // bring back the wording the team chose, not the season default.
   return {
     // A struck-out question that's now removed shouldn't stay struck, or
     // restoring it would bring it back invisible.
@@ -311,5 +420,50 @@ export function removeSectionFromCustomization(
       (field) => field.section !== title,
     ),
     customSections: customization.customSections.filter((s) => s !== title),
+    fieldOverrides: customization.fieldOverrides ?? {},
+  };
+}
+
+/**
+ * Set or clear one default question's override. An edit that matches the
+ * season default in every part removes the key outright, so a team that edits
+ * a question and then puts it back is stored as never having edited it.
+ */
+export function setFieldOverride(
+  customization: FormCustomization,
+  fieldId: string,
+  override: FieldOverride,
+): FormCustomization {
+  const next = { ...(customization.fieldOverrides ?? {}) };
+  // Firestore rejects an `undefined` value outright, so the object written
+  // here only ever carries keys that actually have one.
+  const clean: FieldOverride = {};
+  if (override.label !== undefined && override.label.trim() !== "") {
+    clean.label = override.label.trim();
+  }
+  if (override.options !== undefined && override.options.length > 0) {
+    clean.options = override.options;
+  }
+  if (override.required !== undefined) clean.required = override.required;
+
+  if (Object.keys(clean).length === 0) {
+    delete next[fieldId];
+  } else {
+    next[fieldId] = clean;
+  }
+  return { ...customization, fieldOverrides: next };
+}
+
+/** Update one team-added question in place, keeping its id and its answers. */
+export function updateCustomField(
+  customization: FormCustomization,
+  fieldId: string,
+  update: Omit<CustomField, "id">,
+): FormCustomization {
+  return {
+    ...customization,
+    customFields: customization.customFields.map((field) =>
+      field.id === fieldId ? { ...update, id: field.id } : field,
+    ),
   };
 }

@@ -2,6 +2,7 @@
 
 import { useAuth } from "@/lib/auth/AuthProvider";
 import type { EventData, EventMatch } from "@/lib/eventData";
+import { liveEventKey } from "@/lib/manualEvent";
 import { db } from "@/lib/firebase/client";
 import {
   QUEUE_ALERT_MS,
@@ -86,8 +87,10 @@ export default function PitDashboardPage() {
   }, [dataTeamId, isAdmin]);
 
   // Live match feed from The Blue Alliance, refreshed every minute.
+  // Null for a manual event — nothing upstream to ask about it.
+  const liveKey = liveEventKey(event);
   useEffect(() => {
-    if (!isAdmin || !event?.eventKey) return;
+    if (!isAdmin || !liveKey) return;
     let cancelled = false;
 
     async function load(eventKey: string) {
@@ -107,19 +110,19 @@ export default function PitDashboardPage() {
       }
     }
 
-    void load(event.eventKey);
-    const timer = setInterval(() => void load(event.eventKey), LIVE_REFRESH_MS);
+    void load(liveKey);
+    const timer = setInterval(() => void load(liveKey), LIVE_REFRESH_MS);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [isAdmin, event?.eventKey]);
+  }, [isAdmin, liveKey]);
 
   // Live queueing from FRC Nexus — what the lead queuer is actually calling,
   // which TBA doesn't publish at all. Only events running Nexus queue
   // management have it, so a null status is normal, not an error.
   useEffect(() => {
-    if (!isAdmin || !event?.eventKey) return;
+    if (!isAdmin || !liveKey) return;
     const team = profile?.teamId ?? "";
     let cancelled = false;
 
@@ -141,13 +144,13 @@ export default function PitDashboardPage() {
       }
     }
 
-    void load(event.eventKey);
-    const timer = setInterval(() => void load(event.eventKey), QUEUE_REFRESH_MS);
+    void load(liveKey);
+    const timer = setInterval(() => void load(liveKey), QUEUE_REFRESH_MS);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [isAdmin, event?.eventKey, profile?.teamId]);
+  }, [isAdmin, liveKey, profile?.teamId]);
 
   // One-second tick drives the queue countdown and the blink threshold.
   useEffect(() => {

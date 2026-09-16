@@ -12,6 +12,7 @@ import {
   predictMatch,
   redWinProbability,
   reviewMatch,
+  scoredOptionsFor,
   scoutedPoints,
   upcomingTeamMatches,
 } from "@/lib/drive";
@@ -371,5 +372,19 @@ describe("reviewMatch", () => {
     );
     expect(review.prediction.redWinProbability).toBeNull();
     expect(review.called).toBeNull();
+  });
+});
+
+describe("scoredOptionsFor", () => {
+  it("names the option strings the predictor pays out for", () => {
+    // Editing these in Form Setup is what the editor's warning is guarding:
+    // the mapping is by exact text, so a rename scores nothing.
+    expect(scoredOptionsFor("endgame")).toEqual(["Level 1", "Level 2", "Level 3"]);
+    expect(scoredOptionsFor("autoClimb")).toEqual(["Climbed (L1)"]);
+  });
+
+  it("is empty for a field the predictor doesn't score by option", () => {
+    expect(scoredOptionsFor("notes")).toEqual([]);
+    expect(scoredOptionsFor("custom_anything")).toEqual([]);
   });
 });

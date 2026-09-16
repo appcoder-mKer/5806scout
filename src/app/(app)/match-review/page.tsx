@@ -10,6 +10,7 @@ import {
   type MatchReview,
 } from "@/lib/drive";
 import type { EventData, EventMatch } from "@/lib/eventData";
+import { liveEventKey } from "@/lib/manualEvent";
 import { db } from "@/lib/firebase/client";
 import {
   resolveOffset,
@@ -137,7 +138,7 @@ export default function MatchReviewPage() {
   }, [dataTeamId, isAdmin]);
 
   // Video keys come from TBA on open, never from Firestore.
-  const eventKey = event?.eventKey ?? null;
+  const eventKey = liveEventKey(event);
   const [videoNonce, setVideoNonce] = useState(0);
   const videoToken = `${eventKey ?? ""}#${videoNonce}`;
   useEffect(() => {

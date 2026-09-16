@@ -7,6 +7,7 @@ import {
   type MatchSlot,
 } from "@/lib/assignments";
 import type { EventData, EventMatch } from "@/lib/eventData";
+import { liveEventKey } from "@/lib/manualEvent";
 import { db } from "@/lib/firebase/client";
 import { COMP_LEVEL_LABELS } from "@/lib/pitDashboard";
 import {
@@ -111,7 +112,8 @@ export function AssignmentNotifications() {
       (s) => setMatchDoc(s.exists() ? (s.data() as MatchAssignmentsDoc) : null),
     );
     const unsubEvent = onSnapshot(doc(db, "teams", teamId, "config", "event"), (s) =>
-      setEventKey(s.exists() ? (s.data() as EventData).eventKey : null),
+      // liveEventKey, not eventKey: a manual event has no TBA page to poll.
+      setEventKey(s.exists() ? liveEventKey(s.data() as EventData) : null),
     );
     return () => {
       unsubMatch();

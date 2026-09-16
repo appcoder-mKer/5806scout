@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchTeamEvents } from "./statbotics";
+import { fetchTeamEvents, fetchTeamYear } from "./statbotics";
 
 /** No-op sleep so retry backoff costs no wall-clock time in tests. */
 const noSleep = () => Promise.resolve();
@@ -101,5 +101,67 @@ describe("fetchTeamEvents", () => {
 
     const result = await fetchTeamEvents("2026test", { sleep: noSleep });
     expect(result).toEqual({ ok: false, status: 200 });
+  });
+});
+
+describe("fetchTeamYear", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("asks for the team's season row by team and year", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ team: 5806, epa: { total_points: 41.7 } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchTeamYear(5806, 2026, { sleep: noSleep });
+
+    expect(fetchMock.mock.calls[0][0]).toContain("/team_year/5806/2026");
+    expect(result).toEqual({
+      ok: true,
+      data: { team: 5806, epa: { total_points: 41.7 } },
+    });
+  });
+
+  it("treats a 404 as a team with no season row, not a failure", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 404)));
+
+    expect(await fetchTeamYear(9999, 2026, { sleep: noSleep })).toEqual({
+      ok: true,
+      data: null,
+    });
+  });
+
+  // Same outage shape as fetchTeamEvents guards against: `{}` with no team
+  // number is the API being down, not a team without an EPA.
+  it("rejects a body with no team number rather than reporting no EPA", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({})));
+
+    expect(await fetchTeamYear(5806, 2026, { sleep: noSleep })).toEqual({
+      ok: false,
+      status: 200,
+    });
+  });
+
+  it("retries a transient 500 before giving up", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({}, 500))
+      .mockResolvedValueOnce(jsonResponse({ team: 254, epa: { total_points: 80 } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchTeamYear(254, 2026, { sleep: noSleep });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.ok).toBe(true);
+  });
+
+  it("reports failure when the network never answers", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+    expect(await fetchTeamYear(5806, 2026, { sleep: noSleep })).toEqual({
+      ok: false,
+      status: null,
+    });
   });
 });

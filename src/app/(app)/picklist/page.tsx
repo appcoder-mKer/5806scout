@@ -21,6 +21,7 @@ import {
 } from "@/lib/alliances";
 import { buildTeamProfiles, SCORING_WEIGHTS } from "@/lib/drive";
 import type { EventData, EventRankingRow, EventTeam } from "@/lib/eventData";
+import { liveEventKey } from "@/lib/manualEvent";
 import { db } from "@/lib/firebase/client";
 import { useScoutForms } from "@/lib/useScoutForms";
 import {
@@ -120,8 +121,10 @@ export default function PicklistPage() {
 
   // Official qual ranks (Statbotics via the rankings route), refreshed every
   // minute like the Event tab's Ranking view. Missing data just renders "—".
+  // Null for a manual event: rankings are the field's own numbers, and an
+  // event TBA has never heard of has none.
+  const eventKey = liveEventKey(event);
   useEffect(() => {
-    const eventKey = event?.eventKey;
     if (!eventKey) return;
     let cancelled = false;
 
@@ -148,7 +151,7 @@ export default function PicklistPage() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [event?.eventKey]);
+  }, [eventKey]);
 
   const { order, doNotPick } = useMemo(() => {
     if (!event) return { order: [], doNotPick: [] };
