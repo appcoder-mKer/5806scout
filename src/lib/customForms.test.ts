@@ -7,8 +7,11 @@ import {
   removeSectionFromCustomization,
   sanitizeScoutFormsConfig,
   setFieldOverride,
+  orderedSectionTitles,
+  swapSections,
   updateCustomField,
   type CustomField,
+  type FormCustomization,
 } from "./customForms";
 import { emptyValues, missingRequiredFields, type FormSection } from "./formSchema";
 
@@ -50,6 +53,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: [],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [],
     });
     expect(result).toEqual([
@@ -68,6 +72,7 @@ describe("applyCustomization", () => {
       removedFieldIds: ["endgame"],
       customSections: [],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [],
     });
     expect(result).toEqual([
@@ -86,6 +91,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: [],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [custom({ id: "custom_climb", section: "Endgame", kind: "counter" })],
     });
     const endgame = result.find((s) => s.title === "Endgame");
@@ -98,6 +104,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: [],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [custom({ id: "custom_a" }), custom({ id: "custom_b" })],
     });
     const last = result[result.length - 1];
@@ -111,6 +118,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: [],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [custom({ id: "custom_climb", section: "Endgame" })],
     });
     const endgame = result.find((s) => s.title === "Endgame");
@@ -123,6 +131,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: [],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [
         custom({ id: "endgame", label: "Impostor" }),
         custom({ id: "custom_a", label: "First" }),
@@ -140,6 +149,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: ["Defense", "Strategy"],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [
         custom({ id: "custom_strat", section: "Strategy" }),
         custom({ id: "custom_def", section: "Defense" }),
@@ -159,6 +169,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: ["Empty"],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [],
     });
     expect(result.map((s) => s.title)).toEqual(["Autonomous", "Endgame"]);
@@ -170,6 +181,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: ["Endgame"],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [custom({ id: "custom_climb", section: "Endgame" })],
     });
     expect(result.filter((s) => s.title === "Endgame")).toHaveLength(1);
@@ -184,6 +196,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: [],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [
         custom({ id: "custom_map", kind: "drawing", required: true }),
         custom({ id: "custom_pic", kind: "photo" }),
@@ -212,6 +225,7 @@ describe("applyCustomization", () => {
       removedFieldIds: [],
       customSections: [],
       fieldOverrides: {},
+      sectionOrder: [],
       customFields: [
         custom({ id: "custom_req", required: true }),
         custom({ id: "custom_tally", kind: "counter" }),
@@ -325,6 +339,7 @@ describe("removeSectionFromCustomization", () => {
         customFields: [],
         customSections: [],
         fieldOverrides: {},
+        sectionOrder: [],
       },
       "Autonomous",
       DEFAULTS,
@@ -354,6 +369,7 @@ describe("removeSectionFromCustomization", () => {
         ],
         customSections: ["Defense", "Strategy"],
         fieldOverrides: {},
+        sectionOrder: [],
       },
       "Defense",
       DEFAULTS,
@@ -370,6 +386,7 @@ describe("removeSectionFromCustomization", () => {
         customFields: [],
         customSections: [],
         fieldOverrides: {},
+        sectionOrder: [],
       },
       "Autonomous",
       DEFAULTS,
@@ -608,5 +625,94 @@ describe("sanitizeScoutFormsConfig — field overrides", () => {
       matchScout: { fieldOverrides: { notes: { required: false } } },
     });
     expect(config.matchScout.fieldOverrides).toEqual({ notes: { required: false } });
+  });
+});
+
+describe("section order", () => {
+  const THREE: readonly FormSection[] = [
+    ...DEFAULTS,
+    {
+      title: "Teleop",
+      fields: [{ kind: "counter", id: "teleScored", label: "Scored" }],
+    },
+  ];
+
+  function ordered(customization: FormCustomization) {
+    return applyCustomization(THREE, customization).map((s) => s.title);
+  }
+
+  it("renders default sections in the team's order", () => {
+    expect(
+      ordered({ ...emptyCustomization(), sectionOrder: ["Endgame", "Teleop", "Autonomous"] }),
+    ).toEqual(["Endgame", "Teleop", "Autonomous"]);
+  });
+
+  it("leaves a section the team never ordered where the season put it", () => {
+    // "Teleop" is new to the schema, so an order saved before it existed
+    // shouldn't drag it to the end — only Autonomous and Endgame swap.
+    expect(
+      ordered({ ...emptyCustomization(), sectionOrder: ["Endgame", "Autonomous"] }),
+    ).toEqual(["Endgame", "Autonomous", "Teleop"]);
+  });
+
+  it("ignores titles the schema no longer has", () => {
+    expect(
+      ordered({ ...emptyCustomization(), sectionOrder: ["Gone", "Teleop", "Autonomous"] }),
+    ).toEqual(["Teleop", "Endgame", "Autonomous"]);
+  });
+
+  it("keeps team-added sections after the defaults", () => {
+    expect(
+      ordered({
+        ...emptyCustomization(),
+        sectionOrder: ["Teleop", "Endgame", "Autonomous"],
+        customSections: ["Defense"],
+        customFields: [custom({ id: "custom_def", section: "Defense" })],
+      }),
+    ).toEqual(["Teleop", "Endgame", "Autonomous", "Defense"]);
+  });
+
+  it("swaps two default sections", () => {
+    const start = emptyCustomization();
+    const swapped = swapSections(start, THREE, "Autonomous", "Teleop");
+    expect(orderedSectionTitles(THREE, swapped.sectionOrder)).toEqual([
+      "Teleop",
+      "Endgame",
+      "Autonomous",
+    ]);
+    // Swapping with a section two rows up is what an arrow does when the row
+    // between them is hidden, so it has to land the same way.
+    const again = swapSections(swapped, THREE, "Autonomous", "Teleop");
+    expect(orderedSectionTitles(THREE, again.sectionOrder)).toEqual([
+      "Autonomous",
+      "Endgame",
+      "Teleop",
+    ]);
+  });
+
+  it("swaps two team-added sections", () => {
+    const start = { ...emptyCustomization(), customSections: ["Defense", "Notes"] };
+    expect(swapSections(start, THREE, "Notes", "Defense").customSections).toEqual([
+      "Notes",
+      "Defense",
+    ]);
+  });
+
+  it("leaves a swap across the default/team line alone", () => {
+    const start = { ...emptyCustomization(), customSections: ["Defense"] };
+    expect(swapSections(start, THREE, "Defense", "Endgame")).toBe(start);
+  });
+
+  it("leaves an unknown section alone", () => {
+    const start = emptyCustomization();
+    expect(swapSections(start, THREE, "Nowhere", "Endgame")).toBe(start);
+  });
+
+  it("sanitizes a stored order the way it sanitizes section titles", () => {
+    const config = sanitizeScoutFormsConfig({
+      pitScout: { sectionOrder: [" Endgame ", "Endgame", "", 3, "Autonomous"] },
+    });
+    expect(config.pitScout.sectionOrder).toEqual(["Endgame", "Autonomous"]);
+    expect(sanitizeScoutFormsConfig({}).pitScout.sectionOrder).toEqual([]);
   });
 });

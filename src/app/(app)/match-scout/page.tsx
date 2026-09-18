@@ -46,7 +46,7 @@ import {
   setDoc,
   updateDoc,
 } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 
 // Bespoke REBUILT (2026) match scout screen. The generic schema-driven form
 // couldn't keep up with this game — fuel arrives hundreds of balls at a time,
@@ -702,8 +702,6 @@ export default function MatchScoutPage() {
   // A team that dropped one of the timed questions from Form Setup loses that
   // button, and dropping all three hides the clock panel entirely.
   const timedButtons = TIMED_BUTTONS.filter((button) => has(button.fieldId));
-  const hasSection = (title: string) =>
-    matchSections.some((section) => section.title === title);
 
   /** The team's own questions for one of the season's sections. */
   const renderExtras = (title: string) =>
@@ -715,6 +713,251 @@ export default function MatchScoutPage() {
         onChange={(value) => setValue(field.id, value)}
       />
     ));
+
+  /**
+   * The season's sections, each built as its own node so they can render in
+   * whatever order the team arranged in Form Setup. Match #, team # and
+   * alliance aren't in here — they say which match this is, not how it went,
+   * so they stay pinned above wherever the sections land.
+   */
+  const seasonBlocks: Record<string, ReactNode> = {
+    "Pre-Match": (
+      <>
+        <SectionTitle>Pre-Match</SectionTitle>
+
+        {has("startPos") && (
+          <Segmented
+            label="Starting position"
+            options={[
+              "Depot side bump",
+              "Outpost side bump",
+              "Depot side trench",
+              "Outpost side trench",
+              "Center (Hub)",
+            ]}
+            columns={2}
+            value={values.startPos as string | null}
+            onChange={(v) => setValue("startPos", v)}
+          />
+        )}
+
+        {has("noShow") && (
+          <label
+            className={`flex cursor-pointer items-center gap-2.5 rounded-md border px-3 py-2.5 transition ${
+              noShow
+                ? "border-amber-500 bg-amber-100/50"
+                : "border-graphite-200 hover:border-graphite-300"
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={noShow}
+              onChange={(e) =>
+                setValue("noShow", e.target.checked ? "Yes" : "No")
+              }
+              className="h-4 w-4 shrink-0 accent-amber-500"
+            />
+            <span className="text-sm font-semibold text-graphite-700">
+              No show — robot never took the field
+            </span>
+          </label>
+        )}
+
+        {renderExtras("Pre-Match")}
+      </>
+    ),
+    "Autonomous": (
+      <>
+        <SectionTitle>Autonomous</SectionTitle>
+
+        {has("autoLeave") && (
+          <Segmented
+            label="Left starting zone"
+            options={["Yes", "No"]}
+            value={values.autoLeave as string | null}
+            onChange={(v) => setValue("autoLeave", v)}
+          />
+        )}
+
+        {has("autoScoredFuel") && (
+          <FuelCounter
+            label="Fuel scored — auto"
+            value={(values.autoScoredFuel as number) ?? 0}
+            onChange={(v) => setValue("autoScoredFuel", v)}
+          />
+        )}
+
+        {has("autoFuelSource") && (
+          <Chips
+            label="Collected fuel from"
+            options={["Preload", "Depot", "Outpost", "Neutral zone"]}
+            value={(values.autoFuelSource as string[]) ?? []}
+            onChange={(v) => setValue("autoFuelSource", v)}
+          />
+        )}
+
+        {has("autoClimb") && (
+          <Segmented
+            label="Auto climb — Level 1 (15 pts)"
+            options={["No attempt", "Climbed (L1)", "Failed"]}
+            value={values.autoClimb as string | null}
+            onChange={(v) => setValue("autoClimb", v)}
+          />
+        )}
+
+        {has("autoPath") && (
+          <DrawingPad
+            label="Auto path"
+            hint="Trace the route the robot drove during auto."
+            value={(values.autoPath as string) ?? null}
+            onChange={(v) => setValue("autoPath", v)}
+          />
+        )}
+
+        {renderExtras("Autonomous")}
+      </>
+    ),
+    "Teleop": (
+      <>
+        <SectionTitle>Teleop</SectionTitle>
+
+        {timedButtons.length > 0 && (
+          <MatchClockPanel
+            clock={clock}
+            now={now}
+            buttons={timedButtons}
+            onToggleMatch={handleToggleMatch}
+            onToggleTimer={handleToggleTimer}
+            onReset={resetClock}
+          />
+        )}
+
+        {has("teleopScoredFuel") && (
+          <FuelCounter
+            label="Fuel scored — teleop"
+            value={(values.teleopScoredFuel as number) ?? 0}
+            onChange={(v) => setValue("teleopScoredFuel", v)}
+          />
+        )}
+
+        {has("teleopFuelFed") && (
+          <FuelCounter
+            label="Fuel fed / passed"
+            value={(values.teleopFuelFed as number) ?? 0}
+            onChange={(v) => setValue("teleopFuelFed", v)}
+          />
+        )}
+
+        {has("teleopFuelSource") && (
+          <Chips
+            label="Collected fuel from"
+            options={["Depot", "Outpost", "Neutral zone", "Opposing zone"]}
+            value={(values.teleopFuelSource as string[]) ?? []}
+            onChange={(v) => setValue("teleopFuelSource", v)}
+          />
+        )}
+
+        {has("crossings") && (
+          <Chips
+            label="Crossed during match"
+            options={["Bump", "Trench"]}
+            value={(values.crossings as string[]) ?? []}
+            onChange={(v) => setValue("crossings", v)}
+          />
+        )}
+
+        {/* The defense and immobilized fields are timed by the clock
+            at the top of this section, so there's nothing to tap for
+            them here. */}
+
+        {renderExtras("Teleop")}
+      </>
+    ),
+    "Endgame": (
+      <>
+        <SectionTitle>Endgame</SectionTitle>
+
+        {has("endgame") && (
+          <Segmented
+            label="Tower climb (L1 10 · L2 20 · L3 30)"
+            options={[
+              "None",
+              "Level 1",
+              "Level 2",
+              "Level 3",
+              "Failed attempt",
+            ]}
+            value={values.endgame as string | null}
+            onChange={(v) => setValue("endgame", v)}
+            columns={3}
+          />
+        )}
+
+        {renderExtras("Endgame")}
+      </>
+    ),
+    "Post-Match": (
+      <>
+        <SectionTitle>Post-Match</SectionTitle>
+
+        {has("fuelRate") && (
+          <RateSlider
+            label="Fuel rate (balls/sec)"
+            min={1}
+            max={25}
+            step={0.1}
+            value={(values.fuelRate as number) ?? 0}
+            onChange={(v) => setValue("fuelRate", v)}
+          />
+        )}
+
+        {has("driverSkill") && (
+          <RatingScale
+            label="Driver skill (0–5)"
+            value={(values.driverSkill as number) ?? 0}
+            onChange={(v) => setValue("driverSkill", v)}
+          />
+        )}
+
+        {has("defenseSkill") && (
+          <RatingScale
+            label="Defense skill (0–5)"
+            value={(values.defenseSkill as number) ?? 0}
+            onChange={(v) => setValue("defenseSkill", v)}
+          />
+        )}
+
+        {has("tipped") && (
+          <Segmented
+            label="Tipped / fell over"
+            options={["No", "Yes"]}
+            value={values.tipped as string | null}
+            onChange={(v) => setValue("tipped", v)}
+          />
+        )}
+
+        {has("card") && (
+          <Segmented
+            label="Card"
+            options={["None", "Yellow", "Red"]}
+            value={values.card as string | null}
+            onChange={(v) => setValue("card", v)}
+          />
+        )}
+
+        {has("wouldPick") && (
+          <Segmented
+            label="Would you pick them?"
+            options={["Yes", "Maybe", "No"]}
+            value={values.wouldPick as string | null}
+            onChange={(v) => setValue("wouldPick", v)}
+          />
+        )}
+
+        {renderExtras("Post-Match")}
+      </>
+    ),
+  };
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 md:px-6">
@@ -754,8 +997,9 @@ export default function MatchScoutPage() {
       />
 
       <div className="surface-card flex flex-col gap-5 p-4 md:p-6">
-        {/* ——— Pre-Match ——— */}
-        <SectionTitle>Pre-Match</SectionTitle>
+        {/* Which match and which robot — pinned above the sections so it
+            stays put however the team orders them. */}
+        <SectionTitle>Match</SectionTitle>
 
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
@@ -820,249 +1064,16 @@ export default function MatchScoutPage() {
           </div>
         </div>
 
-        {has("startPos") && (
-          <Segmented
-            label="Starting position"
-            options={[
-              "Depot side bump",
-              "Outpost side bump",
-              "Depot side trench",
-              "Outpost side trench",
-              "Center (Hub)",
-            ]}
-            columns={2}
-            value={values.startPos as string | null}
-            onChange={(v) => setValue("startPos", v)}
-          />
-        )}
+        {/* The season's sections in the order the team arranged them. A
+            no-show has nothing to scout, so everything past Pre-Match is
+            skipped — the notes below stay, which is the point. */}
+        {matchSections.map((section) => {
+          const block = seasonBlocks[section.title];
+          if (!block) return null;
+          if (noShow && section.title !== "Pre-Match") return null;
+          return <Fragment key={section.title}>{block}</Fragment>;
+        })}
 
-        {has("noShow") && (
-          <label
-            className={`flex cursor-pointer items-center gap-2.5 rounded-md border px-3 py-2.5 transition ${
-              noShow
-                ? "border-amber-500 bg-amber-100/50"
-                : "border-graphite-200 hover:border-graphite-300"
-            }`}
-          >
-            <input
-              type="checkbox"
-              checked={noShow}
-              onChange={(e) =>
-                setValue("noShow", e.target.checked ? "Yes" : "No")
-              }
-              className="h-4 w-4 shrink-0 accent-amber-500"
-            />
-            <span className="text-sm font-semibold text-graphite-700">
-              No show — robot never took the field
-            </span>
-          </label>
-        )}
-
-        {renderExtras("Pre-Match")}
-
-        {/* A no-show has nothing to scout; skip straight to notes. */}
-        {!noShow && (
-          <>
-            {/* ——— Autonomous ——— */}
-            {hasSection("Autonomous") && (
-              <>
-                <SectionTitle>Autonomous</SectionTitle>
-
-                {has("autoLeave") && (
-                  <Segmented
-                    label="Left starting zone"
-                    options={["Yes", "No"]}
-                    value={values.autoLeave as string | null}
-                    onChange={(v) => setValue("autoLeave", v)}
-                  />
-                )}
-
-                {has("autoScoredFuel") && (
-                  <FuelCounter
-                    label="Fuel scored — auto"
-                    value={(values.autoScoredFuel as number) ?? 0}
-                    onChange={(v) => setValue("autoScoredFuel", v)}
-                  />
-                )}
-
-                {has("autoFuelSource") && (
-                  <Chips
-                    label="Collected fuel from"
-                    options={["Preload", "Depot", "Outpost", "Neutral zone"]}
-                    value={(values.autoFuelSource as string[]) ?? []}
-                    onChange={(v) => setValue("autoFuelSource", v)}
-                  />
-                )}
-
-                {has("autoClimb") && (
-                  <Segmented
-                    label="Auto climb — Level 1 (15 pts)"
-                    options={["No attempt", "Climbed (L1)", "Failed"]}
-                    value={values.autoClimb as string | null}
-                    onChange={(v) => setValue("autoClimb", v)}
-                  />
-                )}
-
-                {has("autoPath") && (
-                  <DrawingPad
-                    label="Auto path"
-                    hint="Trace the route the robot drove during auto."
-                    value={(values.autoPath as string) ?? null}
-                    onChange={(v) => setValue("autoPath", v)}
-                  />
-                )}
-
-                {renderExtras("Autonomous")}
-              </>
-            )}
-
-            {/* ——— Teleop ——— */}
-            {hasSection("Teleop") && (
-              <>
-                <SectionTitle>Teleop</SectionTitle>
-
-                {timedButtons.length > 0 && (
-                  <MatchClockPanel
-                    clock={clock}
-                    now={now}
-                    buttons={timedButtons}
-                    onToggleMatch={handleToggleMatch}
-                    onToggleTimer={handleToggleTimer}
-                    onReset={resetClock}
-                  />
-                )}
-
-                {has("teleopScoredFuel") && (
-                  <FuelCounter
-                    label="Fuel scored — teleop"
-                    value={(values.teleopScoredFuel as number) ?? 0}
-                    onChange={(v) => setValue("teleopScoredFuel", v)}
-                  />
-                )}
-
-                {has("teleopFuelFed") && (
-                  <FuelCounter
-                    label="Fuel fed / passed"
-                    value={(values.teleopFuelFed as number) ?? 0}
-                    onChange={(v) => setValue("teleopFuelFed", v)}
-                  />
-                )}
-
-                {has("teleopFuelSource") && (
-                  <Chips
-                    label="Collected fuel from"
-                    options={["Depot", "Outpost", "Neutral zone", "Opposing zone"]}
-                    value={(values.teleopFuelSource as string[]) ?? []}
-                    onChange={(v) => setValue("teleopFuelSource", v)}
-                  />
-                )}
-
-                {has("crossings") && (
-                  <Chips
-                    label="Crossed during match"
-                    options={["Bump", "Trench"]}
-                    value={(values.crossings as string[]) ?? []}
-                    onChange={(v) => setValue("crossings", v)}
-                  />
-                )}
-
-                {/* The defense and immobilized fields are timed by the clock
-                    at the top of this section, so there's nothing to tap for
-                    them here. */}
-
-                {renderExtras("Teleop")}
-              </>
-            )}
-
-            {/* ——— Endgame ——— */}
-            {hasSection("Endgame") && (
-              <>
-                <SectionTitle>Endgame</SectionTitle>
-
-                {has("endgame") && (
-                  <Segmented
-                    label="Tower climb (L1 10 · L2 20 · L3 30)"
-                    options={[
-                      "None",
-                      "Level 1",
-                      "Level 2",
-                      "Level 3",
-                      "Failed attempt",
-                    ]}
-                    value={values.endgame as string | null}
-                    onChange={(v) => setValue("endgame", v)}
-                    columns={3}
-                  />
-                )}
-
-                {renderExtras("Endgame")}
-              </>
-            )}
-
-            {/* ——— Post-Match ——— */}
-            {hasSection("Post-Match") && (
-              <>
-                <SectionTitle>Post-Match</SectionTitle>
-
-                {has("fuelRate") && (
-                  <RateSlider
-                    label="Fuel rate (balls/sec)"
-                    min={1}
-                    max={25}
-                    step={0.1}
-                    value={(values.fuelRate as number) ?? 0}
-                    onChange={(v) => setValue("fuelRate", v)}
-                  />
-                )}
-
-                {has("driverSkill") && (
-                  <RatingScale
-                    label="Driver skill (0–5)"
-                    value={(values.driverSkill as number) ?? 0}
-                    onChange={(v) => setValue("driverSkill", v)}
-                  />
-                )}
-
-                {has("defenseSkill") && (
-                  <RatingScale
-                    label="Defense skill (0–5)"
-                    value={(values.defenseSkill as number) ?? 0}
-                    onChange={(v) => setValue("defenseSkill", v)}
-                  />
-                )}
-
-                {has("tipped") && (
-                  <Segmented
-                    label="Tipped / fell over"
-                    options={["No", "Yes"]}
-                    value={values.tipped as string | null}
-                    onChange={(v) => setValue("tipped", v)}
-                  />
-                )}
-
-                {has("card") && (
-                  <Segmented
-                    label="Card"
-                    options={["None", "Yellow", "Red"]}
-                    value={values.card as string | null}
-                    onChange={(v) => setValue("card", v)}
-                  />
-                )}
-
-                {has("wouldPick") && (
-                  <Segmented
-                    label="Would you pick them?"
-                    options={["Yes", "Maybe", "No"]}
-                    value={values.wouldPick as string | null}
-                    onChange={(v) => setValue("wouldPick", v)}
-                  />
-                )}
-
-                {renderExtras("Post-Match")}
-              </>
-            )}
-          </>
-        )}
 
         {has("notes") && (
           <label className="flex flex-col gap-1.5">

@@ -82,6 +82,15 @@ export interface FormCustomization {
    * before editing shipped, hence every reader goes through the sanitizer.
    */
   fieldOverrides: Record<string, FieldOverride>;
+  /**
+   * Default-schema section titles in the order this team renders them. Empty
+   * means "the season's own order". Titles the schema no longer has are
+   * ignored, and a section the team never ordered — a new one from a schema
+   * update — keeps the slot the season gave it rather than being shoved to
+   * the end. Team-added sections aren't in here; their order is the order of
+   * `customSections`, and they always follow the defaults.
+   */
+  sectionOrder: string[];
 }
 
 export interface ScoutFormsConfig {
@@ -96,6 +105,7 @@ export function emptyCustomization(): FormCustomization {
     customFields: [],
     customSections: [],
     fieldOverrides: {},
+    sectionOrder: [],
   };
 }
 
@@ -169,6 +179,24 @@ function sanitizeFieldOverrides(value: unknown): Record<string, FieldOverride> {
   return overrides;
 }
 
+/**
+ * Titles are the join key between a section and its questions, so trim them
+ * and drop blanks/duplicates rather than letting two "Strategy " variants
+ * split one section in half — or, in a section order, name the same section
+ * twice and leave another one out.
+ */
+function sanitizeTitles(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .filter((title): title is string => typeof title === "string")
+        .map((title) => title.trim())
+        .filter((title) => title !== ""),
+    ),
+  ];
+}
+
 function sanitizeCustomization(value: unknown): FormCustomization {
   if (!isRecord(value)) return emptyCustomization();
   const hiddenFieldIds = Array.isArray(value.hiddenFieldIds)
@@ -182,25 +210,13 @@ function sanitizeCustomization(value: unknown): FormCustomization {
         .map(sanitizeCustomField)
         .filter((field): field is CustomField => field !== null)
     : [];
-  // Titles are the join key between a section and its questions, so trim them
-  // and drop blanks/duplicates rather than letting two "Strategy " variants
-  // split one section in half.
-  const customSections = Array.isArray(value.customSections)
-    ? [
-        ...new Set(
-          value.customSections
-            .filter((title): title is string => typeof title === "string")
-            .map((title) => title.trim())
-            .filter((title) => title !== ""),
-        ),
-      ]
-    : [];
   return {
     hiddenFieldIds,
     removedFieldIds,
     customFields,
-    customSections,
+    customSections: sanitizeTitles(value.customSections),
     fieldOverrides: sanitizeFieldOverrides(value.fieldOverrides),
+    sectionOrder: sanitizeTitles(value.sectionOrder),
   };
 }
 
@@ -312,10 +328,84 @@ export function applyFieldOverride(
 }
 
 /**
+ * The season's section titles in the order this team arranged them.
+ *
+ * Only titles the schema still has are honoured, and they're slotted back into
+ * the positions those same titles hold by default. That's what keeps a section
+ * the team never touched — one this season's schema added after they saved
+ * their order — sitting where the season put it instead of at the end.
+ */
+export function orderedSectionTitles(
+  defaults: readonly FormSection[],
+  sectionOrder: readonly string[] | undefined,
+): string[] {
+  const titles = defaults.map((section) => section.title);
+  if (!sectionOrder || sectionOrder.length === 0) return titles;
+
+  const known = new Set(titles);
+  const placed = new Set<string>();
+  const arranged = sectionOrder.filter((title) => {
+    if (!known.has(title) || placed.has(title)) return false;
+    placed.add(title);
+    return true;
+  });
+
+  const ordered = [...titles];
+  const slots = titles.flatMap((title, index) => (placed.has(title) ? [index] : []));
+  slots.forEach((slot, i) => {
+    ordered[slot] = arranged[i];
+  });
+  return ordered;
+}
+
+/** Swap two entries, or return the list untouched if either isn't in it. */
+function swapTitles(titles: readonly string[], a: string, b: string): string[] {
+  const i = titles.indexOf(a);
+  const j = titles.indexOf(b);
+  if (i === -1 || j === -1) return [...titles];
+  const next = [...titles];
+  [next[i], next[j]] = [next[j], next[i]];
+  return next;
+}
+
+/**
+ * Trade two sections' places.
+ *
+ * It takes the other section rather than a direction because Form Setup hides
+ * a section whose questions are all deleted: an up arrow has to swap with the
+ * section the admin can actually see above it, not with a hidden one in
+ * between, or the button would look broken.
+ *
+ * A season section swaps with a season section and a team-added one with a
+ * team-added one — team sections always render after the defaults, so a swap
+ * across that line is a no-op.
+ */
+export function swapSections(
+  customization: FormCustomization,
+  defaults: readonly FormSection[],
+  title: string,
+  otherTitle: string,
+): FormCustomization {
+  const isDefault = (t: string) => defaults.some((section) => section.title === t);
+  if (isDefault(title) && isDefault(otherTitle)) {
+    const ordered = orderedSectionTitles(defaults, customization.sectionOrder);
+    return { ...customization, sectionOrder: swapTitles(ordered, title, otherTitle) };
+  }
+  const { customSections } = customization;
+  if (customSections.includes(title) && customSections.includes(otherTitle)) {
+    return {
+      ...customization,
+      customSections: swapTitles(customSections, title, otherTitle),
+    };
+  }
+  return customization;
+}
+
+/**
  * The team's effective form: default sections minus hidden fields and with
- * their edits applied, plus custom questions appended to their target section
- * (or a trailing section when the target doesn't exist). Sections left with no
- * fields disappear.
+ * their edits applied, in the order the team arranged them, plus custom
+ * questions appended to their target section (or a trailing section when the
+ * target doesn't exist). Sections left with no fields disappear.
  */
 export function applyCustomization(
   defaults: readonly FormSection[],
@@ -330,14 +420,18 @@ export function applyCustomization(
     ...customization.removedFieldIds,
   ]);
   const overrides = customization.fieldOverrides ?? {};
+  const byTitle = new Map(defaults.map((section) => [section.title, section]));
   const sections: { title: string; description?: string; fields: FieldDef[] }[] =
-    defaults.map((section) => ({
-      title: section.title,
-      ...(section.description ? { description: section.description } : {}),
-      fields: section.fields
-        .filter((field) => !hidden.has(field.id))
-        .map((field) => applyFieldOverride(field, overrides[field.id])),
-    }));
+    orderedSectionTitles(defaults, customization.sectionOrder)
+      .map((title) => byTitle.get(title))
+      .filter((section): section is FormSection => section !== undefined)
+      .map((section) => ({
+        title: section.title,
+        ...(section.description ? { description: section.description } : {}),
+        fields: section.fields
+          .filter((field) => !hidden.has(field.id))
+          .map((field) => applyFieldOverride(field, overrides[field.id])),
+      }));
 
   // Team-added sections render after the defaults, in the order the admin
   // arranged them. Seeding them empty here (rather than letting the first
@@ -421,6 +515,9 @@ export function removeSectionFromCustomization(
     ),
     customSections: customization.customSections.filter((s) => s !== title),
     fieldOverrides: customization.fieldOverrides ?? {},
+    // A season section keeps its slot in the order: restoring one of its
+    // questions from the drawer should bring it back where the team put it.
+    sectionOrder: customization.sectionOrder ?? [],
   };
 }
 

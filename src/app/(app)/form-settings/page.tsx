@@ -7,9 +7,11 @@ import {
   applyFieldOverride,
   CUSTOM_SECTION_TITLE,
   makeCustomFieldId,
+  orderedSectionTitles,
   removeSectionFromCustomization,
   SCOUT_FORMS_DOC_ID,
   setFieldOverride,
+  swapSections,
   updateCustomField,
   type CustomField,
   type CustomFieldKind,
@@ -134,6 +136,66 @@ function RestoreIcon() {
     >
       <path d="M3 3v5h5M3.05 13a9 9 0 1 0 2.6-6.4L3 8" />
     </svg>
+  );
+}
+
+/** Chevron — moves a section a place up or down the form. */
+function ChevronIcon({ up }: { up: boolean }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d={up ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+    </svg>
+  );
+}
+
+/**
+ * The up/down pair on a section header. A missing handler means the section is
+ * already at that end of the form, which is a disabled arrow rather than a
+ * missing one so the header's controls don't shift around as things move.
+ */
+function SectionMoveButtons({
+  title,
+  onUp,
+  onDown,
+}: {
+  title: string;
+  onUp: (() => void) | null;
+  onDown: (() => void) | null;
+}) {
+  const style =
+    "rounded-md p-1.5 text-graphite-500 transition hover:bg-graphite-100 hover:text-graphite-900 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-graphite-500";
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => onUp?.()}
+        disabled={!onUp}
+        aria-label={`Move section ${title} up`}
+        title="Move section up"
+        className={style}
+      >
+        <ChevronIcon up />
+      </button>
+      <button
+        type="button"
+        onClick={() => onDown?.()}
+        disabled={!onDown}
+        aria-label={`Move section ${title} down`}
+        title="Move section down"
+        className={style}
+      >
+        <ChevronIcon up={false} />
+      </button>
+    </>
   );
 }
 
@@ -356,6 +418,16 @@ export default function FormSettingsPage() {
     .flatMap((section) => section.fields)
     .filter((field) => removed.has(field.id));
   const customSections = draft?.customSections ?? [];
+  // The season's sections in this team's order, minus any whose questions have
+  // all been deleted — those have no card, so nothing to move past.
+  const orderedDefaults = orderedSectionTitles(defaults, draft?.sectionOrder)
+    .map((title) => defaults.find((section) => section.title === title))
+    .filter((section): section is FormSection => section !== undefined)
+    .map((section) => ({
+      section,
+      fields: section.fields.filter((field) => !removed.has(field.id)),
+    }))
+    .filter((entry) => entry.fields.length > 0);
   const sectionChoices = [
     ...new Set([
       ...defaults.map((s) => s.title),
@@ -458,6 +530,11 @@ export default function FormSettingsPage() {
     setNewLabel("");
     setNewOptions("");
     setNewRequired(false);
+  }
+
+  /** Trade a section's place with the one rendered next to it. */
+  function moveSectionTo(title: string, neighbor: string) {
+    updateDraft((prev) => swapSections(prev, defaults, title, neighbor));
   }
 
   function addSection() {
@@ -645,7 +722,7 @@ export default function FormSettingsPage() {
             ? "Brand the app for your team — accent color, background, font, and the top-left logo. Changes apply to everyone."
             : tab === "picklist"
               ? "Choose which criteria the Picklist table shows. The metrics come from your Match Scout questions, so this list follows whatever you set up there."
-              : `Tune the ${FORMS[formKey].label} form for your team — edit a question's wording or answers, uncheck one to strike it out, trash it to remove it, delete a whole section, add your own sections and questions. Changes apply to everyone on the team.`}
+              : `Tune the ${FORMS[formKey].label} form for your team — edit a question's wording or answers, uncheck one to strike it out, trash it to remove it, reorder or delete a whole section, add your own sections and questions. Changes apply to everyone on the team.`}
         </p>
       </div>
 
@@ -704,11 +781,9 @@ export default function FormSettingsPage() {
 
           <section className="flex flex-col gap-3">
             <h2 className="section-title">Default questions</h2>
-            {defaults.map((section) => {
-              const visibleFields = section.fields.filter(
-                (field) => !removed.has(field.id),
-              );
-              if (visibleFields.length === 0) return null;
+            {orderedDefaults.map(({ section, fields: visibleFields }, index) => {
+              const above = orderedDefaults[index - 1]?.section.title;
+              const below = orderedDefaults[index + 1]?.section.title;
               return (
                 <div key={section.title} className="surface-card p-4">
                   <div className="mb-3 flex items-center justify-between gap-3">
@@ -716,15 +791,22 @@ export default function FormSettingsPage() {
                       <span aria-hidden className="h-2.5 w-1 bg-maroon-600" />
                       {section.title}
                     </h3>
-                    <button
-                      type="button"
-                      onClick={() => removeSection(section.title)}
-                      aria-label={`Delete section ${section.title}`}
-                      title="Delete this section and its questions"
-                      className="shrink-0 rounded-md p-1.5 text-graphite-500 transition hover:bg-maroon-50 hover:text-maroon-600 dark:hover:text-maroon-400"
-                    >
-                      <TrashIcon />
-                    </button>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <SectionMoveButtons
+                        title={section.title}
+                        onUp={above ? () => moveSectionTo(section.title, above) : null}
+                        onDown={below ? () => moveSectionTo(section.title, below) : null}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeSection(section.title)}
+                        aria-label={`Delete section ${section.title}`}
+                        title="Delete this section and its questions"
+                        className="rounded-md p-1.5 text-graphite-500 transition hover:bg-maroon-50 hover:text-maroon-600 dark:hover:text-maroon-400"
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
                   </div>
                   <ul className="flex flex-col divide-y divide-graphite-100">
                     {visibleFields.map((defaultField) => {
@@ -870,17 +952,19 @@ export default function FormSettingsPage() {
           <section className="flex flex-col gap-3">
             <h2 className="section-title">Your team&apos;s sections</h2>
             <p className="-mt-1 text-xs text-graphite-500">
-              Sections you add render after the default ones, in this order. A
-              section shows up on the {FORMS[formKey].label} form once it has at
-              least one question.
+              Sections you add render after the default ones, in this order —
+              use the arrows to rearrange them. A section shows up on the{" "}
+              {FORMS[formKey].label} form once it has at least one question.
             </p>
 
             {customSections.length > 0 && (
               <ul className="surface-card divide-y divide-graphite-100">
-                {customSections.map((title) => {
+                {customSections.map((title, index) => {
                   const questionCount = draft.customFields.filter(
                     (field) => field.section === title,
                   ).length;
+                  const above = customSections[index - 1];
+                  const below = customSections[index + 1];
                   return (
                     <li
                       key={title}
@@ -895,19 +979,26 @@ export default function FormSettingsPage() {
                           {questionCount === 1 ? "" : "s"}
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => removeSection(title)}
-                        aria-label={`Delete section ${title}`}
-                        title={
-                          questionCount > 0
-                            ? "Delete this section and its questions"
-                            : "Delete section"
-                        }
-                        className="shrink-0 rounded-md p-1.5 text-graphite-500 transition hover:bg-maroon-50 hover:text-maroon-600 dark:hover:text-maroon-400"
-                      >
-                        <TrashIcon />
-                      </button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <SectionMoveButtons
+                          title={title}
+                          onUp={above ? () => moveSectionTo(title, above) : null}
+                          onDown={below ? () => moveSectionTo(title, below) : null}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeSection(title)}
+                          aria-label={`Delete section ${title}`}
+                          title={
+                            questionCount > 0
+                              ? "Delete this section and its questions"
+                              : "Delete section"
+                          }
+                          className="rounded-md p-1.5 text-graphite-500 transition hover:bg-maroon-50 hover:text-maroon-600 dark:hover:text-maroon-400"
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
                     </li>
                   );
                 })}
