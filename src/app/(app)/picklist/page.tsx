@@ -1,6 +1,9 @@
 "use client";
 
 import { AllianceBoard } from "@/components/AllianceBoard";
+import { AllianceLab } from "@/components/AllianceLab";
+import { PickBoard } from "@/components/PickBoard";
+import { PicklistHero } from "@/components/PicklistHero";
 import { PicklistTable } from "@/components/PicklistTable";
 import { type Sort } from "@/components/SortableTh";
 import { useAuth } from "@/lib/auth/AuthProvider";
@@ -24,6 +27,8 @@ import type { EventData, EventRankingRow, EventTeam } from "@/lib/eventData";
 import { liveEventKey } from "@/lib/manualEvent";
 import { db } from "@/lib/firebase/client";
 import { useScoutForms } from "@/lib/useScoutForms";
+import { usePickBoard } from "@/lib/usePickBoard";
+import { PICK_PRESETS, presetWeights, scorePicklist } from "@/lib/pickScore";
 import {
   moveItem,
   moveToDoNotPick,
@@ -47,11 +52,15 @@ function phaseAvg(agg: TeamAggregate | undefined, ids: string[]): number | null 
   return ids.reduce((sum, id) => sum + (agg.averages[id] ?? 0), 0);
 }
 
-type View = "picklist" | "alliances" | "simulation";
+type View = "picklist" | "score" | "alliances" | "lab" | "simulation";
+
+const VIEWS: readonly View[] = ["picklist", "score", "alliances", "lab", "simulation"];
 
 const VIEW_LABELS: Record<View, string> = {
   picklist: "Picklist",
+  score: "Pick score",
   alliances: "Alliance Selection",
+  lab: "Alliance lab",
   simulation: "Simulation",
 };
 
@@ -71,6 +80,18 @@ export default function PicklistPage() {
   // state, not persisted: a sort is a lens for comparing teams, while the
   // ranking below it is the record. Clearing it returns to My Rank order.
   const [sort, setSort] = useState<Sort | null>(null);
+  // The weighted lens, the hero and the alliance lab share one data hook
+  // (also mounted on the admin dashboard) so they never disagree about a team.
+  const pickBoard = usePickBoard();
+  const balancedRows = useMemo(
+    () =>
+      scorePicklist(
+        pickBoard.stats,
+        pickBoard.metrics,
+        presetWeights(PICK_PRESETS[0], pickBoard.metrics),
+      ),
+    [pickBoard.stats, pickBoard.metrics],
+  );
 
   useEffect(() => {
     if (!profile || !dataTeamId) return;
@@ -388,13 +409,15 @@ export default function PicklistPage() {
 
       {event && (
         <>
-          <div className="surface-card flex w-fit p-0.5">
-            {(["picklist", "alliances", "simulation"] as const).map((v) => (
+          <PicklistHero data={pickBoard} rows={balancedRows} />
+
+          <div className="surface-card no-scrollbar flex max-w-full overflow-x-auto p-0.5 md:w-fit">
+            {VIEWS.map((v) => (
               <button
                 key={v}
                 type="button"
                 onClick={() => setView(v)}
-                className={`rounded px-3.5 py-1.5 text-sm font-medium transition ${
+                className={`shrink-0 whitespace-nowrap rounded px-3.5 py-1.5 text-sm font-medium transition ${
                   view === v
                     ? "bg-maroon-600 text-white"
                     : "text-graphite-600 hover:text-graphite-900"
@@ -530,6 +553,10 @@ export default function PicklistPage() {
               </section>
             </>
           )}
+
+          {view === "score" && <PickBoard data={pickBoard} />}
+
+          {view === "lab" && <AllianceLab data={pickBoard} rows={balancedRows} />}
 
           {view === "alliances" && (
             <AllianceSelectionView

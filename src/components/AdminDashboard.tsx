@@ -1,5 +1,6 @@
 "use client";
 
+import { PicklistHero } from "@/components/PicklistHero";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import type {
   MatchAssignmentsDoc,
@@ -24,6 +25,8 @@ import {
 import { showsInRoster } from "@/lib/emailVerification";
 import { normalizeStatus } from "@/lib/talkie";
 import type { UserProfile } from "@/lib/types";
+import { PICK_PRESETS, presetWeights, scorePicklist } from "@/lib/pickScore";
+import { usePickBoard } from "@/lib/usePickBoard";
 import {
   collection,
   doc,
@@ -479,6 +482,34 @@ function CrewStatus({
   );
 }
 
+/**
+ * The picklist at a glance: who leads, where we sit, and our best partner.
+ * Weights, marks and the alliance lab live on the Picklist page.
+ */
+function PickSummary() {
+  const pickBoard = usePickBoard();
+  const rows = useMemo(
+    () =>
+      scorePicklist(
+        pickBoard.stats,
+        pickBoard.metrics,
+        presetWeights(PICK_PRESETS[0], pickBoard.metrics),
+      ),
+    [pickBoard.stats, pickBoard.metrics],
+  );
+
+  if (!pickBoard.loaded || !pickBoard.event) return null;
+
+  return (
+    <section className="flex flex-col gap-2">
+      <PicklistHero data={pickBoard} rows={rows} />
+      <Link href="/picklist" className="btn-ghost self-end">
+        Open picklist →
+      </Link>
+    </section>
+  );
+}
+
 export function AdminDashboard() {
   const { profile } = useAuth();
   const { roster, failed: rosterFailed } = useCrew();
@@ -495,6 +526,7 @@ export function AdminDashboard() {
         </p>
       </div>
 
+      <PickSummary />
       <UnassignedTalkies roster={roster} />
       <CrewStatus roster={roster} rosterFailed={rosterFailed} />
     </div>
