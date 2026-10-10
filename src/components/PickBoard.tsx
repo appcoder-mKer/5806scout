@@ -35,17 +35,36 @@ function fmt(value: number | null, digits = 1): string {
   return value === null ? "—" : value.toFixed(digits);
 }
 
-function Info({ text }: { text: string }) {
+/**
+ * An "i" that explains a header. A real popover rather than a title
+ * attribute: title never shows on a phone and takes a second to appear on a
+ * laptop. Opens on hover and on focus, so a tap or Tab reaches it too.
+ */
+export function Info({ text }: { text: string }) {
   return (
-    <span
-      title={text}
-      aria-label={text}
-      className="ml-1 inline-flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full border border-graphite-300 text-[10px] font-semibold normal-case text-graphite-500"
-    >
-      i
+    <span className="group relative ml-1 inline-flex align-middle">
+      <button
+        type="button"
+        aria-label={text}
+        className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-graphite-300 text-[10px] font-semibold normal-case text-graphite-500 transition hover:border-maroon-400 hover:text-maroon-600 focus:border-maroon-400 focus:text-maroon-600 focus:outline-none"
+      >
+        i
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none invisible absolute left-1/2 top-full z-30 mt-1.5 w-64 -translate-x-1/2 rounded-md border border-graphite-200 bg-surface px-3 py-2 text-left text-xs font-normal normal-case leading-relaxed tracking-normal text-graphite-700 opacity-0 transition group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+      >
+        {text}
+      </span>
     </span>
   );
 }
+
+const ROLE_HINT =
+  "From where a team's points come from. Bottom 35% of the event in expected points: Support, or Defender if their defense rating is in the top third. Otherwise the form section that earns most of their points (e.g. Teleop scorer), All-round scorer when a second section earns 35%+ of them, or Scorer for a team known only by EPA.";
+
+const FLAGS_HINT =
+  "Disabled N× — scouts flagged a breakdown in N matches. Trending up / down — the last 3 matches are 2+ points a match above or below the earlier ones. Few matches — fewer than 3 scouted. EPA only — never scouted, ranked on Statbotics EPA. DNP — on your Do Not Pick list.";
 
 /** Points with a hairline under it spanning the team's worst to best match. */
 function PointsCell({ row, max }: { row: PickRow; max: number }) {
@@ -152,12 +171,14 @@ export function PickBoard({ data }: { data: PickBoardData }) {
 
         <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
           {metrics.map((metric) => (
-            <label
+            <div
               key={metric.id}
               className="flex items-center gap-3 text-sm text-graphite-700"
-              title={metric.hint}
             >
-              <span className="w-28 shrink-0 truncate">{metric.label}</span>
+              <span className="flex w-32 shrink-0 items-center">
+                <span className="truncate">{metric.label}</span>
+                <Info text={metric.hint} />
+              </span>
               <input
                 type="range"
                 min={0}
@@ -176,7 +197,7 @@ export function PickBoard({ data }: { data: PickBoardData }) {
               <span className="stat w-5 text-right text-graphite-900">
                 {effective[metric.id] ?? 0}
               </span>
-            </label>
+            </div>
           ))}
         </div>
 
@@ -239,14 +260,18 @@ export function PickBoard({ data }: { data: PickBoardData }) {
                 Pick score
                 <Info text="0–100: the weighted blend of every metric, scaled across the event." />
               </th>
-              <th>Role</th>
+              <th>
+                Role
+                <Info text={ROLE_HINT} />
+              </th>
               <th>
                 Points
                 <Info text="Expected points per match. The line under it runs from the team's worst scouted match to its best." />
               </th>
               {phaseMetrics.map((m) => (
-                <th key={m.id} title={m.hint}>
+                <th key={m.id}>
                   {m.label}
+                  <Info text={m.hint} />
                 </th>
               ))}
               <th>
@@ -259,7 +284,10 @@ export function PickBoard({ data }: { data: PickBoardData }) {
               </th>
               <th>Trend</th>
               <th>Matches</th>
-              <th>Flags</th>
+              <th>
+                Flags
+                <Info text={FLAGS_HINT} />
+              </th>
               <th>Mark</th>
             </tr>
           </thead>
